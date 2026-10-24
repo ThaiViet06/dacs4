@@ -2,11 +2,11 @@
 
 ## Status and approval gate
 
-Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented. Phase 2 browser acceptance checks remain pending; later phases have not been started. Continue only within the phase the user has requested.
+Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Later phases have not been started. Continue only within the phase the user has requested.
 
 Earlier implementation created partial backend modules, a SQL migration, environment examples, frontend drawing utilities, an authentication adapter, and a board store. These changes remain in the workspace and have not been accepted as a completed application. Review and verify them before continuing; do not assume any phase is complete.
 
-Checklist convention: `[ ]` means pending or unverified; mark `[x]` only after the stated acceptance criteria pass. Phase 2 implementation tasks are complete, but its acceptance criteria are not yet fully verified.
+Checklist convention: `[ ]` means pending or unverified; mark `[x]` only after the stated acceptance criteria pass. Phase 2 implementation and acceptance checks are complete.
 
 ## Scope and chosen stack
 
@@ -139,7 +139,7 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Objective:** Deliver reliable local freehand drawing.
 
-**Depends on:** Phase 1.
+**Planned dependency:** Phase 1. The user deferred Phase 1, and Phase 2 was completed with the available local tooling.
 
 **Implementation checklist, in order:**
 
@@ -153,13 +153,11 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Acceptance checklist:**
 
-- [ ] Drawing position and proportions survive resizing.
-- [ ] Pointer release outside the canvas ends the gesture.
-- [ ] High-DPI displays remain sharp; canceled gestures leave no operation.
+- [x] Drawing position and proportions survive resizing.
+- [x] Pointer release outside the canvas ends the gesture.
+- [x] High-DPI displays remain sharp; canceled gestures leave no operation.
 
-**Verified so far:** Frontend production build and type-check, read-only lint, three drawing model/replay tests, and HTTP route smoke checks passed. These checks cover coordinate mapping/clamping, long-stroke point limits, and vector operation replay.
-
-**Still pending:** Browser interaction checks for pointer release outside the canvas, resize preserving drawing proportions, high-DPI sharpness, and canceled gestures. Phase 2 is not yet fully accepted. The current canvas supports freehand drawing only; other tools and controls belong to Phase 3.
+**Verified:** Frontend production build and type-check, read-only lint, three drawing model/replay tests, and HTTP route smoke checks passed. Chrome browser checks confirmed pointer release outside the canvas, vector replay after resize, a 2× backing store at DPR 2, and cancellation without a new operation. The browser check exposed and prompted a fix for lost pointer capture. Phase 2 is accepted. The current canvas supports freehand drawing only; other tools and controls belong to Phase 3.
 
 **Risk → response:** Resizing clears pixels; redraw from document operations.
 
@@ -415,8 +413,8 @@ Assume **8–10 weeks at 12–15 hours/week**: weeks 1–2 for foundations/tools
 
 ## First phase and final completion gate
 
-After explicit approval, start with **Phase 1**. Review the interrupted changes, resolve the Node mismatch, establish safe configuration, and verify dependency/check commands before adding more features.
+Phase 1 remains deferred at the user's request. Phase 2 is complete; continue with Phase 3 one step at a time when requested. Phase 1's runtime and configuration prerequisites must be resolved before backend integration.
 
 The project is complete only when all requested tools, authenticated rooms, real-time collaboration, consistent reconnection, durable operations, shared checkpoints, private snapshots, and reopen workflows pass locally and on the approved demo deployment, with reproducible documentation and test evidence.
 
-**Current scope:** Phase 2 is implemented pending its browser acceptance checks. Do not treat later phases as implemented; follow the user's requested phase before continuing.
+**Current scope:** Phase 2 is accepted. Do not treat later phases as implemented; follow the user's requested phase and step before continuing.

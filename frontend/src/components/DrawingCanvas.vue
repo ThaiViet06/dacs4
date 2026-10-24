@@ -10,7 +10,7 @@ const props = withDefaults(defineProps<{
   enabled?: boolean
 }>(), {
   color: '#263b53',
-  brushSize: 8,
+  brushSize: 4,
   enabled: true,
 })
 
@@ -72,6 +72,10 @@ function start(event: PointerEvent) {
     points: [pointFrom(event)],
   }
   canvas.value.setPointerCapture(event.pointerId)
+  // Theo dõi trên window để vẫn nhận pointerup nếu trình duyệt làm mất pointer capture ngoài canvas.
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', finish)
+  window.addEventListener('pointercancel', cancelPointer)
   requestRepaint()
 }
 
@@ -94,18 +98,28 @@ function finish(event: PointerEvent) {
   const operation = active.value
   active.value = null
   pointerId = null
+  window.removeEventListener('pointermove', move)
+  window.removeEventListener('pointerup', finish)
+  window.removeEventListener('pointercancel', cancelPointer)
   if (canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId)
   emit('commit', operation)
   requestRepaint()
 }
 
 function cancel() {
+  window.removeEventListener('pointermove', move)
+  window.removeEventListener('pointerup', finish)
+  window.removeEventListener('pointercancel', cancelPointer)
   if (pointerId !== null && canvas.value?.hasPointerCapture(pointerId)) {
     canvas.value.releasePointerCapture(pointerId)
   }
   pointerId = null
   active.value = null
   requestRepaint()
+}
+
+function cancelPointer(event: PointerEvent) {
+  if (event.pointerId === pointerId) cancel()
 }
 
 watch(() => props.operations, requestRepaint, { deep: true })
@@ -121,6 +135,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('blur', cancel)
+  cancel()
   cancelAnimationFrame(frame)
 })
 </script>
@@ -134,9 +149,5 @@ onBeforeUnmount(() => {
     role="img"
     aria-label="Drawing canvas. Drag with a mouse, pen, or finger to draw a freehand stroke."
     @pointerdown="start"
-    @pointermove="move"
-    @pointerup="finish"
-    @pointercancel="cancel"
-    @lostpointercapture="cancel"
   />
 </template>
