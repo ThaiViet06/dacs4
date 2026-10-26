@@ -2,6 +2,7 @@ import type { Operation } from './model'
 
 export function drawOperation(context: CanvasRenderingContext2D, operation: Operation) {
   context.save()
+  // Tẩy xóa pixel của các nét trước đó; màu giấy nằm ở CSS nên không bị xóa theo.
   context.globalCompositeOperation = operation.type === 'eraser' ? 'destination-out' : 'source-over'
   context.strokeStyle = operation.color
   context.fillStyle = operation.color
@@ -26,6 +27,7 @@ export function drawOperation(context: CanvasRenderingContext2D, operation: Oper
     if (operation.type === 'line') { context.moveTo(start.x, start.y); context.lineTo(end.x, end.y) }
     // Chiều rộng/cao âm giúp hình chữ nhật hiện đúng khi kéo ngược sang trái hoặc lên trên.
     if (operation.type === 'rectangle') context.rect(start.x, start.y, end.x - start.x, end.y - start.y)
+    // Khoảng cách từ tâm đến điểm kéo là bán kính, nên kéo theo hướng nào cũng được.
     if (operation.type === 'circle') context.arc(start.x, start.y, Math.hypot(end.x - start.x, end.y - start.y), 0, Math.PI * 2)
     context.stroke()
   }

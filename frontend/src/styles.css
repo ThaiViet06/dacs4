@@ -88,7 +88,9 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
 .panel-subtitle { border-left: 1px solid #e4e8e2; padding-left: 12px; color: #a2aeb0; font-size: 11px; }
 .panel-meta { display: flex; gap: 10px; align-items: center; font-size: 12px; color: #77888a; white-space: nowrap; }
 .canvas-wrap { padding: 0 16px; }
-.drawing-canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #fffefa; border: 1px solid #e9eee7; border-radius: 7px; cursor: crosshair; touch-action: none; user-select: none; }
+.drawing-canvas-stack { position: relative; background: #fffefa; border: 1px solid #e9eee7; border-radius: 7px; overflow: hidden; }
+.drawing-canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; cursor: crosshair; touch-action: none; user-select: none; }
+.drawing-canvas-preview { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .canvas-panel-footer { display: flex; justify-content: space-between; gap: 15px; padding: 14px 20px 16px; color: #9aa7a4; font-size: 11px; }
 .studio-sidebar { display: flex; flex-direction: column; gap: 16px; }
 .sidebar-card { background: white; border: 1px solid #e4e9e2; border-radius: 16px; padding: 23px; }
@@ -104,9 +106,14 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
 .active-check { font-size: 14px; margin-left: auto; color: #779967; }
 .tool-detail { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-top: 1px solid #eff1ee; font-size: 12px; }
 .tool-detail > span { color: #7d8a91; }
-.tool-detail > div { display: flex; align-items: center; gap: 7px; }
 .tool-detail strong { font-size: 11px; }
-.color-swatch { height: 17px; width: 17px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 0 1px #e3e8e3; }
+.tool-control { padding: 14px 0; border-top: 1px solid #eff1ee; font-size: 12px; }
+.tool-control-label { display: block; color: #7d8a91; }
+.tool-control-heading, .color-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tool-control-heading output, .color-control strong { color: #263b53; font-size: 11px; font-weight: 700; }
+.color-control { margin-top: 10px; }
+.color-input { width: 44px; height: 34px; padding: 2px; border: 1px solid #d9e1dc; border-radius: 8px; background: white; cursor: pointer; }
+.size-input { display: block; width: 100%; margin: 13px 0 2px; accent-color: #6b9162; cursor: pointer; }
 .sidebar-helper { border-top: 1px solid #eff1ee; color: #97a3a2; font-size: 11px; line-height: 1.6; margin: 6px 0 0; padding-top: 16px; }
 .sidebar-tip { background: #e5eddd; border-radius: 15px; padding: 22px; color: #577051; }
 .tip-icon { font-size: 27px; margin-bottom: 12px; }

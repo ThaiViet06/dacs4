@@ -38,3 +38,25 @@ test('document replay uses the same ordered vector operations', () => {
   assert.deepEqual(calls, once)
   assert.ok(calls.some(([name, x, y]) => name === 'lineTo' && x === 65 && y === 75))
 })
+
+test('circles keep the same center and radius when dragged in four directions', () => {
+  const calls = []
+  const context = new Proxy({}, {
+    get(_, key) {
+      if (['save', 'restore', 'beginPath', 'arc', 'stroke'].includes(key)) {
+        return (...args) => calls.push([key, ...args])
+      }
+    },
+    set() { return true },
+  })
+  const center = { x: 800, y: 450 }
+  for (const [dx, dy] of [[60, 80], [-60, 80], [-60, -80], [60, -80]]) {
+    calls.length = 0
+    drawOperation(context, {
+      id: crypto.randomUUID(), type: 'circle', color: '#263b53', width: 4,
+      start: center, end: { x: center.x + dx, y: center.y + dy },
+    })
+    assert.deepEqual(calls.find(([name]) => name === 'arc'), ['arc', 800, 450, 100, 0, Math.PI * 2])
+    assert.ok(calls.some(([name]) => name === 'stroke'))
+  }
+})

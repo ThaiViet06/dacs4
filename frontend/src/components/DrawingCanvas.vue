@@ -5,7 +5,7 @@ import { render } from '../drawing/renderer'
 
 const props = withDefaults(defineProps<{
   operations: Operation[]
-  tool?: 'freehand' | 'line' | 'rectangle'
+  tool?: 'freehand' | 'line' | 'rectangle' | 'circle' | 'eraser'
   color?: string
   brushSize?: number
   enabled?: boolean
@@ -18,35 +18,63 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ commit: [operation: Operation] }>()
 const canvas = ref<HTMLCanvasElement | null>(null)
+const previewCanvas = ref<HTMLCanvasElement | null>(null)
 const active = ref<Operation | null>(null)
 let pointerId: number | null = null
 let resizeObserver: ResizeObserver | undefined
-let frame = 0
+let committedFrame = 0
+let previewFrame = 0
 
-function repaint() {
+function repaintCommitted() {
   const element = canvas.value
   const context = element?.getContext('2d')
   if (!element || !context) return
 
-  // Canvas pixels are rebuilt from vector operations after every size change.
+  // Canvas dưới chỉ dựng lại các thao tác đã lưu khi dữ liệu hoặc kích thước thay đổi.
   context.setTransform(element.width / WIDTH, 0, 0, element.height / HEIGHT, 0, 0)
   context.clearRect(0, 0, WIDTH, HEIGHT)
   render(context, props.operations)
-  // Nét xem trước được dựng từ active; danh sách thao tác chỉ đổi sau khi thả con trỏ.
-  if (active.value) render(context, [active.value])
 }
 
-function requestRepaint() {
-  if (frame) return
-  frame = requestAnimationFrame(() => {
-    frame = 0
-    repaint()
+function repaintPreview() {
+  const element = previewCanvas.value
+  const context = element?.getContext('2d')
+  if (!element || !context) return
+
+  // Canvas trên luôn được xóa trước khi vẽ nét đang kéo; hủy thao tác không chạm vào nét đã lưu.
+  context.setTransform(element.width / WIDTH, 0, 0, element.height / HEIGHT, 0, 0)
+  context.clearRect(0, 0, WIDTH, HEIGHT)
+  const operation = active.value
+  if (!operation) return
+  if (operation.type === 'eraser') {
+    // Phủ màu giấy để xem trước vùng tẩy; khi lưu, renderer vẫn xóa bằng destination-out.
+    const paperColor = getComputedStyle(canvas.value!.parentElement!).backgroundColor
+    render(context, [{ ...operation, type: 'freehand', color: paperColor }])
+  } else {
+    render(context, [operation])
+  }
+}
+
+function requestCommittedRepaint() {
+  if (committedFrame) return
+  committedFrame = requestAnimationFrame(() => {
+    committedFrame = 0
+    repaintCommitted()
+  })
+}
+
+function requestPreviewRepaint() {
+  if (previewFrame) return
+  previewFrame = requestAnimationFrame(() => {
+    previewFrame = 0
+    repaintPreview()
   })
 }
 
 function resize() {
   const element = canvas.value
-  if (!element) return
+  const preview = previewCanvas.value
+  if (!element || !preview) return
   const rect = element.getBoundingClientRect()
   if (!rect.width || !rect.height) return
   const ratio = window.devicePixelRatio || 1
@@ -56,7 +84,13 @@ function resize() {
     element.width = width
     element.height = height
   }
-  requestRepaint()
+  // Hai canvas có cùng bộ đệm pixel để nét xem trước trùng khít với nét đã lưu ở mọi DPR.
+  if (preview.width !== width || preview.height !== height) {
+    preview.width = width
+    preview.height = height
+  }
+  requestCommittedRepaint()
+  requestPreviewRepaint()
 }
 
 function pointFrom(event: PointerEvent) {
@@ -68,26 +102,28 @@ function start(event: PointerEvent) {
   event.preventDefault()
   pointerId = event.pointerId
   const point = pointFrom(event)
+  // Chốt màu và độ dày lúc bắt đầu để đổi điều khiển giữa chừng chỉ ảnh hưởng nét kế tiếp.
   const common = { id: crypto.randomUUID(), width: props.brushSize, color: props.color }
-  // Đường thẳng và chữ nhật lưu hai góc kéo; bút tự do lưu toàn bộ đường đi.
-  active.value = props.tool === 'freehand'
-    ? { ...common, type: 'freehand', points: [point] }
+  // Bút và tẩy lưu đường đi; các hình lưu hai điểm, trong đó điểm đầu của hình tròn là tâm.
+  active.value = props.tool === 'freehand' || props.tool === 'eraser'
+    ? { ...common, type: props.tool, points: [point] }
     : { ...common, type: props.tool, start: point, end: point }
   canvas.value.setPointerCapture(event.pointerId)
   // Theo dõi trên window để vẫn nhận pointerup nếu trình duyệt làm mất pointer capture ngoài canvas.
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', finish)
   window.addEventListener('pointercancel', cancelPointer)
-  requestRepaint()
+  requestPreviewRepaint()
 }
 
 function move(event: PointerEvent) {
   if (!active.value || event.pointerId !== pointerId) return
   event.preventDefault()
-  if (active.value.type === 'line' || active.value.type === 'rectangle') {
-    // Hai công cụ hình học chỉ cập nhật đầu cuối; nét xem trước không tạo thêm thao tác.
+  if (active.value.type === 'line' || active.value.type === 'rectangle' || active.value.type === 'circle') {
+    // Cập nhật điểm kéo của hình đang xem trước mà chưa ghi thêm thao tác vào bản vẽ.
     active.value = { ...active.value, end: pointFrom(event) }
   } else {
+    // Tẩy lấy mẫu con trỏ như bút tự do để khi phát lại vẫn xóa đúng đường đã kéo.
     const coalesced = event.getCoalescedEvents?.()
     const samples = coalesced?.length ? coalesced : [event]
     for (const sample of samples) {
@@ -98,7 +134,7 @@ function move(event: PointerEvent) {
       if (point.x !== last?.x || point.y !== last?.y) active.value = appendPoint(operation, point)
     }
   }
-  requestRepaint()
+  requestPreviewRepaint()
 }
 
 function finish(event: PointerEvent) {
@@ -111,16 +147,16 @@ function finish(event: PointerEvent) {
   window.removeEventListener('pointerup', finish)
   window.removeEventListener('pointercancel', cancelPointer)
   if (canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId)
-  // Chữ nhật cần cả chiều rộng và chiều cao; đường thẳng chỉ cần một chiều thay đổi.
+  // Chữ nhật cần đủ hai chiều; đường thẳng và hình tròn cần bán kính/khoảng kéo khác 0.
   const hasSize = operation.type === 'rectangle'
     ? operation.start.x !== operation.end.x && operation.start.y !== operation.end.y
-    : operation.type === 'line'
+    : operation.type === 'line' || operation.type === 'circle'
       ? operation.start.x !== operation.end.x || operation.start.y !== operation.end.y
       : true
   if (hasSize) {
     emit('commit', operation)
   }
-  requestRepaint()
+  requestPreviewRepaint()
 }
 
 function cancel() {
@@ -132,14 +168,14 @@ function cancel() {
   }
   pointerId = null
   active.value = null
-  requestRepaint()
+  requestPreviewRepaint()
 }
 
 function cancelPointer(event: PointerEvent) {
   if (event.pointerId === pointerId) cancel()
 }
 
-watch(() => props.operations, requestRepaint, { deep: true })
+watch(() => props.operations, requestCommittedRepaint, { deep: true })
 watch(() => props.enabled, (enabled) => { if (!enabled) cancel() })
 watch(() => props.tool, () => { if (active.value) cancel() })
 
@@ -154,18 +190,22 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('blur', cancel)
   cancel()
-  cancelAnimationFrame(frame)
+  cancelAnimationFrame(committedFrame)
+  cancelAnimationFrame(previewFrame)
 })
 </script>
 
 <template>
-  <canvas
-    ref="canvas"
-    :width="WIDTH"
-    :height="HEIGHT"
-    class="drawing-canvas"
-    role="img"
-    :aria-label="tool === 'rectangle' ? 'Kéo để vẽ hình chữ nhật' : tool === 'line' ? 'Kéo để vẽ đường thẳng' : 'Kéo để vẽ nét tự do'"
-    @pointerdown="start"
-  />
+  <div class="drawing-canvas-stack">
+    <canvas
+      ref="canvas"
+      :width="WIDTH"
+      :height="HEIGHT"
+      class="drawing-canvas"
+      role="img"
+      :aria-label="tool === 'eraser' ? 'Kéo để tẩy nét vẽ' : tool === 'circle' ? 'Kéo từ tâm để vẽ hình tròn' : tool === 'rectangle' ? 'Kéo để vẽ hình chữ nhật' : tool === 'line' ? 'Kéo để vẽ đường thẳng' : 'Kéo để vẽ nét tự do'"
+      @pointerdown="start"
+    />
+    <canvas ref="previewCanvas" :width="WIDTH" :height="HEIGHT" class="drawing-canvas-preview" aria-hidden="true" />
+  </div>
 </template>

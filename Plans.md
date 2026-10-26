@@ -2,7 +2,7 @@
 
 ## Status and approval gate
 
-Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Phase 3 is in progress: the line and rectangle tools are complete. Continue one step at a time within the phase the user has requested.
+Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Phase 3 is in progress: the line, rectangle, circle, and eraser tools, color/size controls, and separate preview canvas are complete. Continue one step at a time within the phase the user has requested.
 
 Earlier implementation created partial backend modules, a SQL migration, environment examples, frontend drawing utilities, an authentication adapter, and a board store. These changes remain in the workspace and have not been accepted as a completed application. Review and verify them before continuing; do not assume any phase is complete.
 
@@ -157,7 +157,7 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [x] Pointer release outside the canvas ends the gesture.
 - [x] High-DPI displays remain sharp; canceled gestures leave no operation.
 
-**Verified:** Frontend production build and type-check, read-only lint, three drawing model/replay tests, and HTTP route smoke checks passed. Chrome browser checks confirmed pointer release outside the canvas, vector replay after resize, a 2× backing store at DPR 2, and cancellation without a new operation. The browser check exposed and prompted a fix for lost pointer capture. Phase 2 is accepted. The current canvas supports freehand drawing only; other tools and controls belong to Phase 3.
+**Verified:** Frontend production build and type-check, read-only lint, three drawing model/replay tests, and HTTP route smoke checks passed. Chrome browser checks confirmed pointer release outside the canvas, vector replay after resize, a 2× backing store at DPR 2, and cancellation without a new operation. The browser check exposed and prompted a fix for lost pointer capture. Phase 2 is accepted. At that milestone, the canvas supported freehand drawing; later tool progress is tracked in Phase 3.
 
 **Risk → response:** Resizing clears pixels; redraw from document operations.
 
@@ -171,9 +171,10 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 - [x] Add the line tool with a temporary drag preview and a committed operation on release.
 - [x] Add the rectangle tool with a temporary drag preview and a committed operation on release.
-- [ ] Add circle and eraser tools.
-- [ ] Add color selection and brush-size controls.
-- [ ] Separate temporary gesture previews from committed drawing state.
+- [x] Add the circle tool with a temporary drag preview, center-to-edge radius, and a committed operation on release.
+- [x] Add the eraser tool with a temporary path preview and a committed operation on release.
+- [x] Add color selection and brush-size controls (1–50 px), with separate brush and eraser sizes.
+- [x] Separate temporary gesture previews from committed drawing state using two stacked canvases.
 - [ ] Add accessible toolbar labels, keyboard focus, room information, and connection indicators.
 - [ ] Make the layout responsive and implement clear feedback for unavailable actions.
 
@@ -182,10 +183,10 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 **Acceptance checklist:**
 
 - [ ] Tools work in all drag directions; circles follow the defined geometry.
-- [ ] Erasing remains correct after replay.
+- [x] Erasing remains correct after replay.
 - [ ] Selected tools and disabled actions are clear.
 
-**Verified so far:** The line and rectangle tools preview and commit one operation in each of four drag directions. Zero-width and zero-height rectangles are discarded. Switching back to freehand preserves existing lines. Frontend build/type-check, read-only lint, and the three existing drawing tests pass. The other drawing tools, separate preview layer, and remaining acceptance criteria are pending.
+**Verified so far:** The line, rectangle, and circle tools preview and commit one operation in each of four drag directions. Zero-width and zero-height rectangles and zero-radius circles are discarded. Switching back to freehand preserves existing lines. Chrome checks confirmed circle selection, preview before commit, four drag directions, release commit, and zero-radius rejection. Eraser browser checks confirmed preview, cancellation restoring ink, committed erasure after resize replay, drawing over erased areas, and single-point erasing. The eraser uses a separate 24 px default width to clear fine strokes reliably. Color/size browser checks confirmed new strokes use the selected values, old strokes retain theirs, brush and eraser sizes are independent, and the 1–50 px limits work. The two canvas layers align at normal and 2× device pixel ratios; browser checks confirmed freehand, circle, and eraser previews leave committed pixels unchanged until release, cancellation clears only the preview, and erasure survives resize. Frontend build/type-check, read-only lint, and four drawing tests pass. The remaining interface/acceptance criteria are pending.
 
 **Risk → response:** Preview artifacts can alter committed content; isolate preview rendering.
 
@@ -421,4 +422,4 @@ Phase 1 remains deferred at the user's request. Phase 2 is complete; continue wi
 
 The project is complete only when all requested tools, authenticated rooms, real-time collaboration, consistent reconnection, durable operations, shared checkpoints, private snapshots, and reopen workflows pass locally and on the approved demo deployment, with reproducible documentation and test evidence.
 
-**Current scope:** Phase 2 is accepted. Phase 3 has its line and rectangle tools complete; the remaining items are pending. Follow the user's requested step before continuing.
+**Current scope:** Phase 2 is accepted. Phase 3 has its drawing tools, color/size controls, and separate preview canvas complete; the remaining items are pending. Follow the user's requested step before continuing.
