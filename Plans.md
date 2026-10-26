@@ -2,7 +2,7 @@
 
 ## Status and approval gate
 
-Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Phase 3 is in progress: the line, rectangle, circle, and eraser tools, color/size controls, and separate preview canvas are complete. Continue one step at a time within the phase the user has requested.
+Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Phase 3 is in progress: drawing tools, color/size controls, a separate preview canvas, Studio keyboard accessibility, local undo/redo, the responsive Studio layout, Studio action feedback, and a styled new-page confirmation are complete. Continue one step at a time within the phase the user has requested.
 
 Earlier implementation created partial backend modules, a SQL migration, environment examples, frontend drawing utilities, an authentication adapter, and a board store. These changes remain in the workspace and have not been accepted as a completed application. Review and verify them before continuing; do not assume any phase is complete.
 
@@ -39,7 +39,7 @@ Clerk manages identity. Express enforces room membership and ownership. Supabase
 - Allow every participant to save an immutable private snapshot.
 - Open snapshots or checkpoints into new rooms without overwriting an active shared board.
 
-Defer undo/redo, layers, chat, public room discovery, offline editing, and horizontal backend scaling.
+Defer shared-room undo/redo, layers, chat, public room discovery, offline editing, and horizontal backend scaling. Local Studio undo/redo is included in Phase 3.
 
 ## Confirmed findings and remaining prerequisites
 
@@ -175,8 +175,13 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [x] Add the eraser tool with a temporary path preview and a committed operation on release.
 - [x] Add color selection and brush-size controls (1–50 px), with separate brush and eraser sizes.
 - [x] Separate temporary gesture previews from committed drawing state using two stacked canvases.
-- [ ] Add accessible toolbar labels, keyboard focus, room information, and connection indicators.
-- [ ] Make the layout responsive and implement clear feedback for unavailable actions.
+- [x] Add Studio tool shortcuts, accessible labels/focus, live tool/count status, and a personal-mode indicator.
+- [x] Add local Studio undo/redo with Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z, and disabled-state buttons.
+- [x] Adapt the Studio layout and touch targets for narrow screens while preserving the canvas aspect ratio.
+- [ ] Add room information and connection indicators when shared-room flows are integrated.
+- [x] Explain unavailable Studio undo/redo actions with a visible, screen-reader-announced hint.
+- [x] Confirm successful undo, redo, and new-page actions with temporary, screen-reader-announced messages.
+- [x] Replace the browser's new-page confirmation with an accessible Studio dialog that also protects redo-only history.
 
 **Deliverables:** Tool toolbar, preview layer, studio layout, and tool-state controls.
 
@@ -184,9 +189,16 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 - [ ] Tools work in all drag directions; circles follow the defined geometry.
 - [x] Erasing remains correct after replay.
-- [ ] Selected tools and disabled actions are clear.
+- [x] Selected tools are clear to keyboard and screen-reader users.
+- [x] Disabled Studio actions are clear.
 
-**Verified so far:** The line, rectangle, and circle tools preview and commit one operation in each of four drag directions. Zero-width and zero-height rectangles and zero-radius circles are discarded. Switching back to freehand preserves existing lines. Chrome checks confirmed circle selection, preview before commit, four drag directions, release commit, and zero-radius rejection. Eraser browser checks confirmed preview, cancellation restoring ink, committed erasure after resize replay, drawing over erased areas, and single-point erasing. The eraser uses a separate 24 px default width to clear fine strokes reliably. Color/size browser checks confirmed new strokes use the selected values, old strokes retain theirs, brush and eraser sizes are independent, and the 1–50 px limits work. The two canvas layers align at normal and 2× device pixel ratios; browser checks confirmed freehand, circle, and eraser previews leave committed pixels unchanged until release, cancellation clears only the preview, and erasure survives resize. Frontend build/type-check, read-only lint, and four drawing tests pass. The remaining interface/acceptance criteria are pending.
+**Verified so far:** The line, rectangle, and circle tools preview and commit one operation in each of four drag directions. Zero-width and zero-height rectangles and zero-radius circles are discarded. Switching back to freehand preserves existing lines. Chrome checks confirmed circle selection, preview before commit, four drag directions, release commit, and zero-radius rejection. Eraser browser checks confirmed preview, cancellation restoring ink, committed erasure after resize replay, drawing over erased areas, and single-point erasing. The eraser uses a separate 24 px default width to clear fine strokes reliably. Color/size browser checks confirmed new strokes use the selected values, old strokes retain theirs, brush and eraser sizes are independent, and the 1–50 px limits work. The two canvas layers align at normal and 2× device pixel ratios; browser checks confirmed freehand, circle, and eraser previews leave committed pixels unchanged until release, cancellation clears only the preview, and erasure survives resize. Keyboard browser checks confirmed P/L/R/C/E shortcuts, Tab/Enter/Space tool selection, visible focus, input guards, live status/count semantics, and continued drawing. Chrome checks for local undo/redo confirmed Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z, button states, input guards, redo invalidation after a new stroke, and stroke/eraser pixel replay. Responsive Chrome checks at 320, 375, 390, 760, 768, 1024, and 1280 px found no horizontal overflow and preserved the 16:9 canvas with a 2× backing store; phone-sized controls measured at least 44 px high. A simulated touch stroke committed at 390 px. Frontend build/type-check, read-only lint, and four drawing tests pass. The remaining interface/acceptance criteria are pending.
+
+**Latest check:** At 320 px, Chrome confirmed the history hint updates after drawing, undo, and redo; buttons disable at the right times, reference the live hint, and cause no horizontal overflow. Frontend build/type-check and read-only lint pass.
+
+**Action feedback check:** At 320 px, Chrome confirmed that undo/redo buttons and shortcuts show the right success message, canceling a new page shows none, a confirmed new page shows success, and each message clears after 2.5 seconds. The live region and mobile positioning were checked. Frontend build/type-check and read-only lint pass.
+
+**New-page dialog check:** Chrome confirmed immediate reset on a blank page; a focused modal for drawn or redo-only history; cancellation by button or Escape without data loss; confirmation clearing the drawing and redo history; and a responsive 320 px layout without horizontal overflow. Frontend build/type-check and read-only lint pass.
 
 **Risk → response:** Preview artifacts can alter committed content; isolate preview rendering.
 
@@ -422,4 +434,4 @@ Phase 1 remains deferred at the user's request. Phase 2 is complete; continue wi
 
 The project is complete only when all requested tools, authenticated rooms, real-time collaboration, consistent reconnection, durable operations, shared checkpoints, private snapshots, and reopen workflows pass locally and on the approved demo deployment, with reproducible documentation and test evidence.
 
-**Current scope:** Phase 2 is accepted. Phase 3 has its drawing tools, color/size controls, and separate preview canvas complete; the remaining items are pending. Follow the user's requested step before continuing.
+**Current scope:** Phase 2 is accepted. Phase 3 has its drawing tools, color/size controls, separate preview canvas, Studio keyboard accessibility, local undo/redo, responsive Studio layout, Studio action feedback, and a styled new-page confirmation complete; the remaining items are pending. Follow the user's requested step before continuing.

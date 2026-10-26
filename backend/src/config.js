@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 require("dotenv").config({ path: path.join(__dirname, "../.env"), quiet: true });
 
+// Đọc và kiểm tra biến môi trường trước khi tạo kết nối và mở máy chủ.
 function readConfig(env = process.env) {
   const missing = ["DATABASE_URL", "CLERK_PUBLISHABLE_KEY", "CLERK_SECRET_KEY", "ALLOWED_ORIGINS"]
     .filter((name) => !env[name] || /REPLACE_ME|PASSWORD|PROJECT/.test(env[name]));

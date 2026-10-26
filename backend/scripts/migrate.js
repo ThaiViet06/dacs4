@@ -4,6 +4,7 @@ const { createHash } = require("node:crypto");
 const { Pool } = require("pg");
 const { readConfig } = require("../src/config");
 
+// Áp dụng các file SQL theo thứ tự, ghi checksum và khóa để tránh chạy song song.
 async function migrate(pool) {
   const client = await pool.connect();
   try {
@@ -30,6 +31,7 @@ async function migrate(pool) {
     }
   } finally { await client.query("SELECT pg_advisory_unlock(730041)").catch(() => {}); client.release(); }
 }
+// Khi chạy script trực tiếp, tạo pool và đóng nó sau khi migration kết thúc.
 if (require.main === module) {
   (async () => {
     const pool = new Pool(readConfig().database);
