@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 
+// Store giữ công cụ, màu và kích thước để thanh công cụ và canvas dùng chung.
 export const useDrawingStore = defineStore('drawing', () => {
   // Công cụ đang chọn được giữ trong Pinia để giao diện và canvas cùng dùng một trạng thái.
   const tool = ref<'freehand' | 'line' | 'rectangle' | 'circle' | 'eraser'>('freehand')

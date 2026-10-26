@@ -25,6 +25,7 @@ let resizeObserver: ResizeObserver | undefined
 let committedFrame = 0
 let previewFrame = 0
 
+// Vẽ lại toàn bộ thao tác đã lưu trên lớp canvas chính theo tọa độ 1600 × 900.
 function repaintCommitted() {
   const element = canvas.value
   const context = element?.getContext('2d')
@@ -36,6 +37,7 @@ function repaintCommitted() {
   render(context, props.operations)
 }
 
+// Làm mới lớp xem trước để nét đang kéo không ghi đè lên bản vẽ đã lưu.
 function repaintPreview() {
   const element = previewCanvas.value
   const context = element?.getContext('2d')
@@ -55,6 +57,7 @@ function repaintPreview() {
   }
 }
 
+// Gom các yêu cầu vẽ lại bản chính vào một khung hình của trình duyệt.
 function requestCommittedRepaint() {
   if (committedFrame) return
   committedFrame = requestAnimationFrame(() => {
@@ -63,6 +66,7 @@ function requestCommittedRepaint() {
   })
 }
 
+// Gom các lần cập nhật nét xem trước vào một khung hình.
 function requestPreviewRepaint() {
   if (previewFrame) return
   previewFrame = requestAnimationFrame(() => {
@@ -71,6 +75,7 @@ function requestPreviewRepaint() {
   })
 }
 
+// Khớp kích thước bộ đệm của hai canvas với kích thước hiển thị và độ nét màn hình.
 function resize() {
   const element = canvas.value
   const preview = previewCanvas.value
@@ -93,10 +98,12 @@ function resize() {
   requestPreviewRepaint()
 }
 
+// Đổi tọa độ con trỏ trên màn hình sang tọa độ cố định của bản vẽ.
 function pointFrom(event: PointerEvent) {
   return coordinates(event.clientX, event.clientY, canvas.value!.getBoundingClientRect())
 }
 
+// Bắt đầu một nét mới, lưu công cụ hiện tại và giữ quyền theo dõi con trỏ.
 function start(event: PointerEvent) {
   if (!props.enabled || !event.isPrimary || event.button !== 0 || active.value || !canvas.value) return
   event.preventDefault()
@@ -116,6 +123,7 @@ function start(event: PointerEvent) {
   requestPreviewRepaint()
 }
 
+// Cập nhật đường đi của bút/tẩy hoặc điểm cuối của hình khi kéo con trỏ.
 function move(event: PointerEvent) {
   if (!active.value || event.pointerId !== pointerId) return
   event.preventDefault()
@@ -137,6 +145,7 @@ function move(event: PointerEvent) {
   requestPreviewRepaint()
 }
 
+// Kết thúc thao tác kéo và phát nét hợp lệ cho nơi lưu bản vẽ.
 function finish(event: PointerEvent) {
   if (!active.value || event.pointerId !== pointerId) return
   move(event)
@@ -159,6 +168,7 @@ function finish(event: PointerEvent) {
   requestPreviewRepaint()
 }
 
+// Hủy nét đang vẽ và gỡ các sự kiện con trỏ mà không lưu thao tác.
 function cancel() {
   window.removeEventListener('pointermove', move)
   window.removeEventListener('pointerup', finish)
@@ -171,14 +181,19 @@ function cancel() {
   requestPreviewRepaint()
 }
 
+// Chỉ hủy nét khi trình duyệt báo hủy đúng con trỏ đang được theo dõi.
 function cancelPointer(event: PointerEvent) {
   if (event.pointerId === pointerId) cancel()
 }
 
+// Khi danh sách thao tác thay đổi, vẽ lại lớp canvas đã lưu.
 watch(() => props.operations, requestCommittedRepaint, { deep: true })
+// Khi quyền vẽ bị tắt, hủy nét dở để tránh lưu một thao tác không hợp lệ.
 watch(() => props.enabled, (enabled) => { if (!enabled) cancel() })
+// Khi đổi công cụ giữa lúc kéo, hủy nét để mỗi thao tác chỉ có một kiểu vẽ.
 watch(() => props.tool, () => { if (active.value) cancel() })
 
+// Khi canvas xuất hiện, theo dõi thay đổi kích thước và hủy nét nếu cửa sổ mất focus.
 onMounted(() => {
   resizeObserver = new ResizeObserver(resize)
   resizeObserver.observe(canvas.value!)
@@ -186,6 +201,7 @@ onMounted(() => {
   resize()
 })
 
+// Khi canvas bị tháo, dừng observer, sự kiện và các khung hình còn chờ.
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('blur', cancel)

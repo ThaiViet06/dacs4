@@ -1,6 +1,7 @@
 import { getToken } from './auth'
 export const API_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000').replace(/\/$/, '')
 export const WS_URL = import.meta.env.VITE_WS_URL || `${API_URL.replace(/^http/, 'ws')}/ws`
+// Gọi API đã xác thực bằng token Clerk và trả dữ liệu hoặc lỗi có thể hiển thị.
 export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const token = await getToken()
   let response: Response

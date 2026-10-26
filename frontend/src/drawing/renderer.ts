@@ -1,5 +1,6 @@
 import type { Operation } from './model'
 
+// Vẽ một thao tác theo hình học của nó; thao tác tẩy xóa pixel đã vẽ trước đó.
 export function drawOperation(context: CanvasRenderingContext2D, operation: Operation) {
   context.save()
   // Tẩy xóa pixel của các nét trước đó; màu giấy nằm ở CSS nên không bị xóa theo.
@@ -34,6 +35,7 @@ export function drawOperation(context: CanvasRenderingContext2D, operation: Oper
   context.restore()
 }
 
+// Phát lại các thao tác theo thứ tự để hình và nét tẩy cho đúng kết quả cuối.
 export function render(context: CanvasRenderingContext2D, operations: Operation[]) {
   for (const operation of operations) drawOperation(context, operation)
 }

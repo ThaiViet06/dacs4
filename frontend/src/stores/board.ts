@@ -4,6 +4,7 @@ import { emptyDocument, type Operation, type DrawingDocument, type Room } from '
 import { getToken } from '../services/auth'
 import { WS_URL } from '../services/api'
 
+// Store giữ bản vẽ cá nhân hoặc trạng thái phòng chung, gồm cả thao tác chưa được máy chủ xác nhận.
 export const useBoardStore = defineStore('board', () => {
   const document = ref<DrawingDocument>(emptyDocument())
   const room = ref<Room | null>(null)
@@ -14,8 +15,17 @@ export const useBoardStore = defineStore('board', () => {
   const pending = ref<Record<string, Operation>>({})
   const rejected = ref<Operation[]>([])
   const previews = ref<Record<string, { clientId: string; operation: Operation; seenAt: number }>>({})
+  // Chỉ Studio cá nhân dùng lịch sử này; thao tác phòng chung đã lưu trên máy chủ không bị xóa ngược.
+  const redoStack = ref<Operation[]>([])
+  // Ghép thao tác đã xác nhận với nét đang chờ để người dùng thấy ngay nét vừa vẽ.
   const operations = computed(() => [...document.value.operations, ...Object.values(pending.value)])
+  // Chỉ cho hoàn tác thao tác trên bản vẽ cá nhân khi còn nét đã lưu.
+  const canUndo = computed(() => status.value === 'local' && document.value.operations.length > 0)
+  // Chỉ cho làm lại trên bản vẽ cá nhân khi còn nét trong lịch sử hoàn tác.
+  const canRedo = computed(() => status.value === 'local' && redoStack.value.length > 0)
+  // Đếm nét đã gửi nhưng chưa được máy chủ xác nhận.
   const pendingCount = computed(() => Object.keys(pending.value).length)
+  // Trích các nét tạm thời của người khác để hiển thị ở lớp xem trước.
   const remotePreviews = computed(() => Object.values(previews.value).map((item) => item.operation))
   let socket: WebSocket | undefined
   let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -25,11 +35,13 @@ export const useBoardStore = defineStore('board', () => {
   let generation = 0
   let attempt = 0
   let target = ''
+  // Gửi một thông điệp đúng phiên bản giao thức khi WebSocket đang mở.
   function send(type: string, data: Record<string, unknown> = {}) {
     if (socket?.readyState !== WebSocket.OPEN) return false
     socket.send(JSON.stringify({ v: 1, type, ...data }))
     return true
   }
+  // Đóng kết nối hiện tại, hủy bộ hẹn giờ và bỏ trạng thái hiện diện tạm thời.
   function disconnect() {
     generation++
     clearTimeout(retryTimer); clearTimeout(tokenTimer); clearTimeout(watchdog); clearInterval(previewTimer)
@@ -38,20 +50,27 @@ export const useBoardStore = defineStore('board', () => {
     members.value = []
     previews.value = {}
   }
+  // Chuyển về trang vẽ cá nhân trống và xóa dữ liệu của phòng trước đó.
   function local() {
     disconnect(); target = ''; room.value = null; sequence.value = 0; pending.value = {}; rejected.value = []
+    // Trang giấy mới bắt đầu một lịch sử riêng, không thể làm lại nét của trang cũ.
+    redoStack.value = []
     document.value = emptyDocument(); status.value = 'local'; error.value = ''
   }
+  // Chuẩn bị kết nối phòng; giữ nét đang chờ khi nối lại đúng phòng cũ.
   async function connect(roomId: string) {
     disconnect()
+    redoStack.value = []
     if (target !== roomId) { pending.value = {}; rejected.value = []; document.value = emptyDocument(); sequence.value = 0; room.value = null }
     target = roomId
     attempt = 0
     error.value = ''
     const current = generation
+    // Bỏ nét xem trước cũ nếu bên gửi ngắt kết nối trước khi hủy nét.
     previewTimer = setInterval(() => {
       for (const [id, preview] of Object.entries(previews.value)) if (Date.now() - preview.seenAt > 10000) delete previews.value[id]
     }, 1000)
+    // Lấy token mới, mở WebSocket và đăng ký các xử lý đồng bộ của phòng.
     async function open() {
       if (current !== generation) return
       status.value = attempt ? 'reconnecting' : 'connecting'
@@ -59,9 +78,13 @@ export const useBoardStore = defineStore('board', () => {
         const token = await getToken(true)
         if (current !== generation) return
         socket = new WebSocket(WS_URL)
+        // Đóng kết nối nếu máy chủ không gửi trạng thái phòng trong thời hạn chờ.
         watchdog = setTimeout(() => socket?.close(), 75000)
+        // Gửi token ngay khi WebSocket đã sẵn sàng.
         socket.onopen = () => send('auth', { token })
+        // Hiện lỗi kết nối để người dùng biết ứng dụng sẽ thử lại.
         socket.onerror = () => { error.value = 'Connection interrupted. Retrying automatically…' }
+        // Phân loại phản hồi xác thực, trạng thái phòng, nét vẽ và lỗi từ máy chủ.
         socket.onmessage = (event) => {
           if (current !== generation) return
           try {
@@ -69,6 +92,7 @@ export const useBoardStore = defineStore('board', () => {
             if (message.v !== 1) throw new Error('Unsupported server protocol. Please reload.')
             if (message.type === 'auth.ok') {
               clearTimeout(tokenTimer)
+              // Làm mới token trước khi hết hạn để phiên vẽ chung tiếp tục hoạt động.
               tokenTimer = setTimeout(async () => {
                 try { const fresh = await getToken(true); if (current === generation) send('auth.refresh', { token: fresh }) }
                 catch { if (current === generation) { error.value = 'Sign in again to reconnect.'; socket?.close(4401) } }
@@ -111,6 +135,7 @@ export const useBoardStore = defineStore('board', () => {
             }
           } catch (cause) { error.value = cause instanceof Error ? cause.message : 'Unable to synchronize.'; socket?.close(4000) }
         }
+        // Khi mất kết nối, dọn trạng thái tạm và thử nối lại theo thời gian chờ tăng dần.
         socket.onclose = (event) => {
           if (current !== generation) return
           clearTimeout(tokenTimer); clearTimeout(watchdog)
@@ -119,18 +144,40 @@ export const useBoardStore = defineStore('board', () => {
           status.value = 'reconnecting'
           error.value = 'Connection interrupted. Your pending strokes will retry when connected.'
           const delay = Math.min(30000, 1000 * 2 ** Math.min(attempt++, 5)) * (0.8 + Math.random() * 0.2)
+          // Thử mở lại cùng phòng, sau đó gửi lại nét chưa được xác nhận.
           retryTimer = setTimeout(open, delay)
         }
       } catch (cause) { status.value = 'error'; error.value = cause instanceof Error ? cause.message : 'Sign in to connect.' }
     }
     await open()
   }
+  // Lưu nét tại chỗ hoặc gửi nét lên phòng và chờ máy chủ xác nhận.
   function commit(operation: Operation) {
-    if (status.value === 'local') document.value.operations.push(operation)
+    if (status.value === 'local') {
+      // Một nét mới sau khi hoàn tác tạo nhánh mới, nên xóa các nét có thể làm lại.
+      redoStack.value = []
+      document.value.operations.push(operation)
+    }
     else if (status.value === 'connected') { pending.value[operation.id] = operation; send('operation.commit', { operation }) }
   }
+  // Chuyển nét cuối cùng của trang cá nhân sang lịch sử làm lại.
+  function undoLocal() {
+    if (!canUndo.value) return
+    const operation = document.value.operations.pop()
+    if (operation) redoStack.value.push(operation)
+  }
+  // Đưa nét vừa hoàn tác trở lại bản vẽ cá nhân.
+  function redoLocal() {
+    if (!canRedo.value) return
+    // Giữ nguyên ID và thứ tự thao tác để canvas phát lại cả nét vẽ lẫn nét tẩy chính xác.
+    const operation = redoStack.value.pop()
+    if (operation) document.value.operations.push(operation)
+  }
+  // Gửi nét đang kéo để thành viên khác nhìn thấy trước khi nét được lưu.
   function preview(operation: Operation) { if (status.value === 'connected') send('operation.preview', { operation }) }
+  // Báo cho phòng bỏ nét xem trước khi thao tác kéo bị hủy.
   function cancelPreview(operationId: string) { if (status.value === 'connected') send('preview.cancel', { operationId }) }
+  // Tạo bản tài liệu gồm nét đã lưu, đang chờ và bị từ chối để người dùng có thể giữ lại.
   function exportDocument() { return { ...document.value, operations: [...operations.value, ...rejected.value] } }
-  return { document, room, status, error, sequence, members, operations, pendingCount, rejected, remotePreviews, local, connect, disconnect, commit, preview, cancelPreview, exportDocument }
+  return { document, room, status, error, sequence, members, operations, canUndo, canRedo, pendingCount, rejected, remotePreviews, local, connect, disconnect, commit, undoLocal, redoLocal, preview, cancelPreview, exportDocument }
 })
