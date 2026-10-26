@@ -5,10 +5,12 @@ import { render } from '../drawing/renderer'
 
 const props = withDefaults(defineProps<{
   operations: Operation[]
+  tool?: 'freehand' | 'line' | 'rectangle'
   color?: string
   brushSize?: number
   enabled?: boolean
 }>(), {
+  tool: 'freehand',
   color: '#263b53',
   brushSize: 4,
   enabled: true,
@@ -30,6 +32,7 @@ function repaint() {
   context.setTransform(element.width / WIDTH, 0, 0, element.height / HEIGHT, 0, 0)
   context.clearRect(0, 0, WIDTH, HEIGHT)
   render(context, props.operations)
+  // Nét xem trước được dựng từ active; danh sách thao tác chỉ đổi sau khi thả con trỏ.
   if (active.value) render(context, [active.value])
 }
 
@@ -64,13 +67,12 @@ function start(event: PointerEvent) {
   if (!props.enabled || !event.isPrimary || event.button !== 0 || active.value || !canvas.value) return
   event.preventDefault()
   pointerId = event.pointerId
-  active.value = {
-    id: crypto.randomUUID(),
-    type: 'freehand',
-    width: props.brushSize,
-    color: props.color,
-    points: [pointFrom(event)],
-  }
+  const point = pointFrom(event)
+  const common = { id: crypto.randomUUID(), width: props.brushSize, color: props.color }
+  // Đường thẳng và chữ nhật lưu hai góc kéo; bút tự do lưu toàn bộ đường đi.
+  active.value = props.tool === 'freehand'
+    ? { ...common, type: 'freehand', points: [point] }
+    : { ...common, type: props.tool, start: point, end: point }
   canvas.value.setPointerCapture(event.pointerId)
   // Theo dõi trên window để vẫn nhận pointerup nếu trình duyệt làm mất pointer capture ngoài canvas.
   window.addEventListener('pointermove', move)
@@ -82,12 +84,19 @@ function start(event: PointerEvent) {
 function move(event: PointerEvent) {
   if (!active.value || event.pointerId !== pointerId) return
   event.preventDefault()
-  const coalesced = event.getCoalescedEvents?.()
-  const samples = coalesced?.length ? coalesced : [event]
-  for (const sample of samples) {
-    const point = pointFrom(sample)
-    const last = active.value && 'points' in active.value ? active.value.points.at(-1) : undefined
-    if (point.x !== last?.x || point.y !== last?.y) active.value = appendPoint(active.value!, point)
+  if (active.value.type === 'line' || active.value.type === 'rectangle') {
+    // Hai công cụ hình học chỉ cập nhật đầu cuối; nét xem trước không tạo thêm thao tác.
+    active.value = { ...active.value, end: pointFrom(event) }
+  } else {
+    const coalesced = event.getCoalescedEvents?.()
+    const samples = coalesced?.length ? coalesced : [event]
+    for (const sample of samples) {
+      const operation = active.value
+      if (!operation || !('points' in operation)) continue
+      const point = pointFrom(sample)
+      const last = operation.points.at(-1)
+      if (point.x !== last?.x || point.y !== last?.y) active.value = appendPoint(operation, point)
+    }
   }
   requestRepaint()
 }
@@ -102,7 +111,15 @@ function finish(event: PointerEvent) {
   window.removeEventListener('pointerup', finish)
   window.removeEventListener('pointercancel', cancelPointer)
   if (canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId)
-  emit('commit', operation)
+  // Chữ nhật cần cả chiều rộng và chiều cao; đường thẳng chỉ cần một chiều thay đổi.
+  const hasSize = operation.type === 'rectangle'
+    ? operation.start.x !== operation.end.x && operation.start.y !== operation.end.y
+    : operation.type === 'line'
+      ? operation.start.x !== operation.end.x || operation.start.y !== operation.end.y
+      : true
+  if (hasSize) {
+    emit('commit', operation)
+  }
   requestRepaint()
 }
 
@@ -124,6 +141,7 @@ function cancelPointer(event: PointerEvent) {
 
 watch(() => props.operations, requestRepaint, { deep: true })
 watch(() => props.enabled, (enabled) => { if (!enabled) cancel() })
+watch(() => props.tool, () => { if (active.value) cancel() })
 
 onMounted(() => {
   resizeObserver = new ResizeObserver(resize)
@@ -147,7 +165,7 @@ onBeforeUnmount(() => {
     :height="HEIGHT"
     class="drawing-canvas"
     role="img"
-    aria-label="Drawing canvas. Drag with a mouse, pen, or finger to draw a freehand stroke."
+    :aria-label="tool === 'rectangle' ? 'Kéo để vẽ hình chữ nhật' : tool === 'line' ? 'Kéo để vẽ đường thẳng' : 'Kéo để vẽ nét tự do'"
     @pointerdown="start"
   />
 </template>

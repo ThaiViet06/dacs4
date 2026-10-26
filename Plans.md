@@ -2,7 +2,7 @@
 
 ## Status and approval gate
 
-Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Later phases have not been started. Continue only within the phase the user has requested.
+Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Phase 3 is in progress: the line and rectangle tools are complete. Continue one step at a time within the phase the user has requested.
 
 Earlier implementation created partial backend modules, a SQL migration, environment examples, frontend drawing utilities, an authentication adapter, and a board store. These changes remain in the workspace and have not been accepted as a completed application. Review and verify them before continuing; do not assume any phase is complete.
 
@@ -169,7 +169,9 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Implementation checklist, in order:**
 
-- [ ] Add line, rectangle, circle, and eraser tools.
+- [x] Add the line tool with a temporary drag preview and a committed operation on release.
+- [x] Add the rectangle tool with a temporary drag preview and a committed operation on release.
+- [ ] Add circle and eraser tools.
 - [ ] Add color selection and brush-size controls.
 - [ ] Separate temporary gesture previews from committed drawing state.
 - [ ] Add accessible toolbar labels, keyboard focus, room information, and connection indicators.
@@ -182,6 +184,8 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [ ] Tools work in all drag directions; circles follow the defined geometry.
 - [ ] Erasing remains correct after replay.
 - [ ] Selected tools and disabled actions are clear.
+
+**Verified so far:** The line and rectangle tools preview and commit one operation in each of four drag directions. Zero-width and zero-height rectangles are discarded. Switching back to freehand preserves existing lines. Frontend build/type-check, read-only lint, and the three existing drawing tests pass. The other drawing tools, separate preview layer, and remaining acceptance criteria are pending.
 
 **Risk → response:** Preview artifacts can alter committed content; isolate preview rendering.
 
@@ -417,4 +421,4 @@ Phase 1 remains deferred at the user's request. Phase 2 is complete; continue wi
 
 The project is complete only when all requested tools, authenticated rooms, real-time collaboration, consistent reconnection, durable operations, shared checkpoints, private snapshots, and reopen workflows pass locally and on the approved demo deployment, with reproducible documentation and test evidence.
 
-**Current scope:** Phase 2 is accepted. Do not treat later phases as implemented; follow the user's requested phase and step before continuing.
+**Current scope:** Phase 2 is accepted. Phase 3 has its line and rectangle tools complete; the remaining items are pending. Follow the user's requested step before continuing.

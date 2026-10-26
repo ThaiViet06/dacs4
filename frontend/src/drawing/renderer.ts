@@ -24,6 +24,7 @@ export function drawOperation(context: CanvasRenderingContext2D, operation: Oper
   } else {
     const { start, end } = operation
     if (operation.type === 'line') { context.moveTo(start.x, start.y); context.lineTo(end.x, end.y) }
+    // Chiều rộng/cao âm giúp hình chữ nhật hiện đúng khi kéo ngược sang trái hoặc lên trên.
     if (operation.type === 'rectangle') context.rect(start.x, start.y, end.x - start.x, end.y - start.y)
     if (operation.type === 'circle') context.arc(start.x, start.y, Math.hypot(end.x - start.x, end.y - start.y), 0, Math.PI * 2)
     context.stroke()
