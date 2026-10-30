@@ -2,11 +2,27 @@
 
 ## Status and approval gate
 
-Current progress: Phase 2 frontend foundation and local freehand canvas have been implemented and accepted. Phase 3 is in progress: drawing tools, color/size controls, a separate preview canvas, Studio keyboard accessibility, local undo/redo, the responsive Studio layout, Studio action feedback, and a styled new-page confirmation are complete. Continue one step at a time within the phase the user has requested.
+Last progress review: **2026-10-30**. Phase 2 and local Phase 3 criteria are accepted. Clerk SDK/plugin registration, account controls, and the live sign-in modal are verified. Real authenticated sessions and shared-room indicators remain pending in Phase 4. Continue one requested step at a time.
 
 Earlier implementation created partial backend modules, a SQL migration, environment examples, frontend drawing utilities, an authentication adapter, and a board store. These changes remain in the workspace and have not been accepted as a completed application. Review and verify them before continuing; do not assume any phase is complete.
 
-Checklist convention: `[ ]` means pending or unverified; mark `[x]` only after the stated acceptance criteria pass. Phase 2 implementation and acceptance checks are complete.
+Checklist convention: `[ ]` means pending/unverified; `[x]` means verified. Update completed work in place with brief deliverables and test results; retain unfinished tasks and acceptance criteria in full.
+
+### Current phase status
+
+| Phase | Confirmed progress | Remaining work |
+| --- | --- | --- |
+| 1 — Environment | Root Git repository and ignore rules exist; environment examples and configuration code exist. | Deferred overall; align Node, correct backend metadata, install backend dependencies, and verify credentials/startup. |
+| 2 — Canvas foundation | Accepted: routes, local freehand drawing, logical coordinates, high-DPI rendering, resize replay, and pointer cancellation. | None within its accepted scope. |
+| 3 — Tools/UI | Local Studio acceptance passed, including all tools, previews, undo/redo, responsive layout, feedback, and reset confirmation. | Shared-room details and connection indicators during Phase 4. |
+| 4 — Authentication/rooms | SDK/plugin, local publishable key, header account controls, and live sign-in modal verified. | Consolidate the auth adapter; verify real sign-in/out, restored sessions, and protected room workflows. |
+| 5 — Synchronization | Draft WebSocket/queue/store logic exists. | Integrate room UI and verify ordering, isolation, previews, retries, and reconnection. |
+| 6 — Persistence | SQL migration and PostgreSQL repository source exist. | Apply migrations to an approved Supabase target and verify saves, snapshots, ownership, and restart recovery. |
+| 7 — Docker | No Docker packaging exists. | Complete packaging and container checks after the local MVP. |
+| 8 — Integration | Local Studio works independently. | Complete authenticated collaboration and save/reopen journeys. |
+| 9 — Testing | Four initial drawing tests pass; frontend build/type-check/lint and browser checks have passed. Backend syntax checks pass. | Vitest/Vue Test Utils, backend integration tests, Playwright, CI, and failure/load testing. |
+| 10 — Deployment | No deployment has been verified. | Hosting configuration and approved deployment after local acceptance. |
+| 11 — Documentation | Contributor guide, phased plan, progress records, and Vietnamese function comments exist. | Reproducible setup guide, diagrams, report, and presentation materials. |
 
 ## Scope and chosen stack
 
@@ -44,14 +60,16 @@ Defer shared-room undo/redo, layers, chat, public room discovery, offline editin
 ## Confirmed findings and remaining prerequisites
 
 - Project root: `C:\Users\LENOVO\Desktop\DACS4`; applications are in `frontend/` and `backend/`.
-- The original frontend is a Vue starter; its routes and UI still need application integration.
-- The original backend exposes HTTP and WebSocket welcome behavior; partial replacement modules now require review and integration.
+- The frontend now contains a working personal Studio. Gallery, room, and invitation views remain placeholders.
+- The backend now contains startup/configuration, HTTP/WebSocket, validation, queue, and PostgreSQL repository modules; these remain unverified as a running integrated service.
 - Existing frontend scripts include development, type-check, build, preview, lint, and formatting. The original backend test script is a placeholder.
-- Baseline starter build/type-check, read-only lint, and backend syntax checks passed before implementation. They do not validate the newer partial changes.
-- The inspected Node version, 24.11.1, does not satisfy the frontend's declared Node 24 requirement of at least 24.12.0.
-- Docker was unavailable on the inspected shell's PATH; no root Git repository was detected.
-- New dependency downloads failed in the restricted environment; an elevated installation request was declined. Do not treat those packages as installed.
-- No working Clerk credentials, Supabase connection, database migrations, Docker runtime, or deployed application have been verified.
+- Verified: frontend build/type-check/lint, drawing tests, Studio browser checks, and backend syntax. Backend runtime behavior remains unverified.
+- The inspected Node version is still 24.11.1. The frontend declares at least 24.12.0 for Node 24; some currently locked development tools require at least 24.15.0. Align Node with the installed toolchain before backend integration.
+- Git is initialized; ignore rules were verified for local environment files, dependencies, builds, and temporary artifacts.
+- Docker remains unavailable on the inspected shell's PATH; no Dockerfile exists.
+- `@clerk/vue@2.5.16` is installed in `frontend/` and recorded in its manifest and lockfile. `pg` and `@clerk/backend`, which are imported by backend startup, are neither declared nor installed in `backend/`.
+- Backend dotenv loading and configuration validation already exist in `backend/src/config.js`; `backend/package.json` still points `main` to nonexistent `index.js`.
+- The Clerk development publishable key is configured in ignored `frontend/.env.local`; the live signed-out state and sign-in modal work. Authenticated sessions, Supabase connectivity/migrations, Docker runtime, and deployment remain unverified.
 
 Assume Windows, PowerShell, VS Code, internet access for Clerk/Supabase, one backend process, and a single student developer. Never copy secrets into this document.
 
@@ -118,12 +136,14 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 **Implementation checklist, in order:**
 
 - [ ] Review partial source changes against this plan and identify unfinished integration.
-- [ ] Upgrade/align local Node to a supported Node 24 release satisfying `>=24.12.0`.
-- [ ] Review root ignore rules before initializing Git; exclude secrets and generated files.
+- [ ] Upgrade/align local Node to a supported Node 24 release satisfying the locked toolchain requirements (currently `>=24.15.0`).
+- [x] Git initialized; local environment, dependency, and build paths are ignored and untracked.
 - [ ] Correct backend package metadata, load environment configuration, and validate required variables.
 - [ ] Review environment examples and read-only check scripts.
 - [ ] Install approved dependencies and update lockfiles consistently.
 - [ ] Prepare Clerk development settings and a Supabase development database without exposing credentials.
+
+**Existing artifacts:** Dotenv loading, configuration validation, and environment examples are present. The approved frontend Clerk SDK installation is complete; the broader dependency/setup task remains open because backend `pg` and `@clerk/backend`, runtime alignment, and service configuration are pending. Phase 1 remains deferred overall.
 
 **Deliverables:** Reviewed baseline, runtime requirements, environment examples, scripts, and reproducible dependency manifests/lockfiles.
 
@@ -137,29 +157,15 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 ## Phase 2 — Frontend foundation and canvas
 
-**Objective:** Deliver reliable local freehand drawing.
+**Status:** Accepted. Phase 1 was deferred by the user; implementation used the available local tooling.
 
-**Planned dependency:** Phase 1. The user deferred Phase 1, and Phase 2 was completed with the available local tooling.
+- [x] Home/Studio navigation and placeholder gallery, room, and invitation routes.
+- [x] Drawing types, reusable renderer, Pinia state, and local freehand canvas.
+- [x] Logical coordinates, high-DPI rendering, resize replay, pointer capture, and cancellation.
 
-**Implementation checklist, in order:**
+**Deliverables:** `DrawingCanvas.vue`, `drawing/model.ts`, `drawing/renderer.ts`, stores, and views under `frontend/src/`.
 
-- [x] Create home/local studio, gallery, invitation, and room navigation (gallery, room, and invitation routes are placeholders until later phases).
-- [x] Review drawing types and implement a reusable renderer.
-- [x] Establish Pinia tool, document, and connection state for local drawing.
-- [x] Implement logical coordinates, high-DPI rendering, pointer capture, and cancellation in the canvas component.
-- [x] Replay the document on resize and complete local freehand drawing.
-
-**Deliverables:** Canvas component, renderer/composable, drawing types, and room/local views.
-
-**Acceptance checklist:**
-
-- [x] Drawing position and proportions survive resizing.
-- [x] Pointer release outside the canvas ends the gesture.
-- [x] High-DPI displays remain sharp; canceled gestures leave no operation.
-
-**Verified:** Frontend production build and type-check, read-only lint, three drawing model/replay tests, and HTTP route smoke checks passed. Chrome browser checks confirmed pointer release outside the canvas, vector replay after resize, a 2× backing store at DPR 2, and cancellation without a new operation. The browser check exposed and prompted a fix for lost pointer capture. Phase 2 is accepted. At that milestone, the canvas supported freehand drawing; later tool progress is tracked in Phase 3.
-
-**Risk → response:** Resizing clears pixels; redraw from document operations.
+**Verified:** Build/type-check, read-only lint, drawing tests, and browser checks passed. Drawing proportions survive resize; the canvas uses a 2× backing store at DPR 2; releasing outside ends a gesture; cancellation leaves no operation.
 
 ## Phase 3 — Drawing tools and interface
 
@@ -169,36 +175,23 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Implementation checklist, in order:**
 
-- [x] Add the line tool with a temporary drag preview and a committed operation on release.
-- [x] Add the rectangle tool with a temporary drag preview and a committed operation on release.
-- [x] Add the circle tool with a temporary drag preview, center-to-edge radius, and a committed operation on release.
-- [x] Add the eraser tool with a temporary path preview and a committed operation on release.
-- [x] Add color selection and brush-size controls (1–50 px), with separate brush and eraser sizes.
-- [x] Separate temporary gesture previews from committed drawing state using two stacked canvases.
-- [x] Add Studio tool shortcuts, accessible labels/focus, live tool/count status, and a personal-mode indicator.
-- [x] Add local Studio undo/redo with Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z, and disabled-state buttons.
-- [x] Adapt the Studio layout and touch targets for narrow screens while preserving the canvas aspect ratio.
+- [x] Freehand, line, rectangle, circle, and eraser tools with separate previews and commits on release.
+- [x] Color and width controls (1–50 px), with independent brush and eraser sizes.
+- [x] P/L/R/C/E tool shortcuts and local undo/redo with Ctrl+Z, Ctrl+Y, and Ctrl+Shift+Z.
+- [x] Accessible labels/focus, live tool/count status, disabled-action hints, and temporary action feedback.
+- [x] Responsive Studio layout and styled new-page confirmation protecting drawing and redo history.
 - [ ] Add room information and connection indicators when shared-room flows are integrated.
-- [x] Explain unavailable Studio undo/redo actions with a visible, screen-reader-announced hint.
-- [x] Confirm successful undo, redo, and new-page actions with temporary, screen-reader-announced messages.
-- [x] Replace the browser's new-page confirmation with an accessible Studio dialog that also protects redo-only history.
 
 **Deliverables:** Tool toolbar, preview layer, studio layout, and tool-state controls.
 
 **Acceptance checklist:**
 
-- [ ] Tools work in all drag directions; circles follow the defined geometry.
+- [x] Tools work in all drag directions; circles follow the defined geometry.
 - [x] Erasing remains correct after replay.
 - [x] Selected tools are clear to keyboard and screen-reader users.
 - [x] Disabled Studio actions are clear.
 
-**Verified so far:** The line, rectangle, and circle tools preview and commit one operation in each of four drag directions. Zero-width and zero-height rectangles and zero-radius circles are discarded. Switching back to freehand preserves existing lines. Chrome checks confirmed circle selection, preview before commit, four drag directions, release commit, and zero-radius rejection. Eraser browser checks confirmed preview, cancellation restoring ink, committed erasure after resize replay, drawing over erased areas, and single-point erasing. The eraser uses a separate 24 px default width to clear fine strokes reliably. Color/size browser checks confirmed new strokes use the selected values, old strokes retain theirs, brush and eraser sizes are independent, and the 1–50 px limits work. The two canvas layers align at normal and 2× device pixel ratios; browser checks confirmed freehand, circle, and eraser previews leave committed pixels unchanged until release, cancellation clears only the preview, and erasure survives resize. Keyboard browser checks confirmed P/L/R/C/E shortcuts, Tab/Enter/Space tool selection, visible focus, input guards, live status/count semantics, and continued drawing. Chrome checks for local undo/redo confirmed Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z, button states, input guards, redo invalidation after a new stroke, and stroke/eraser pixel replay. Responsive Chrome checks at 320, 375, 390, 760, 768, 1024, and 1280 px found no horizontal overflow and preserved the 16:9 canvas with a 2× backing store; phone-sized controls measured at least 44 px high. A simulated touch stroke committed at 390 px. Frontend build/type-check, read-only lint, and four drawing tests pass. The remaining interface/acceptance criteria are pending.
-
-**Latest check:** At 320 px, Chrome confirmed the history hint updates after drawing, undo, and redo; buttons disable at the right times, reference the live hint, and cause no horizontal overflow. Frontend build/type-check and read-only lint pass.
-
-**Action feedback check:** At 320 px, Chrome confirmed that undo/redo buttons and shortcuts show the right success message, canceling a new page shows none, a confirmed new page shows success, and each message clears after 2.5 seconds. The live region and mobile positioning were checked. Frontend build/type-check and read-only lint pass.
-
-**New-page dialog check:** Chrome confirmed immediate reset on a blank page; a focused modal for drawn or redo-only history; cancellation by button or Escape without data loss; confirmation clearing the drawing and redo history; and a responsive 320 px layout without horizontal overflow. Frontend build/type-check and read-only lint pass.
+**Verified:** Build/type-check, read-only lint, and four drawing tests passed. Chrome/Edge checks covered 20 gestures across five tools/four directions, previews before commit, degenerate shape rejection, cancellation, color/width, eraser replay, keyboard guards, undo/redo, feedback, and reset cancellation/confirmation. Emulated widths of 320–1280 px preserved the 16:9 canvas without horizontal overflow; DPR 2 and simulated touch were checked. Physical-phone testing has not been recorded.
 
 **Risk → response:** Preview artifacts can alter committed content; isolate preview rendering.
 
@@ -213,6 +206,11 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 **Implementation checklist, in order:**
 
 - [ ] Review server startup, HTTP, authentication, room, and WebSocket module boundaries.
+- [x] Install `@clerk/vue@2.5.16` and update the npm manifest/lockfile.
+- [x] Register conditional `clerkPlugin` in `main.ts`; document `.env.local` setup and use SDK-compatible types.
+- [x] Configure the development publishable key in ignored `.env.local`; keep `.env.example` blank.
+- [x] Add header loading/delayed, signed-out, and signed-in controls using `SignInButton`, `UserButton`, and `useUser`; share configuration with plugin startup.
+- [ ] Verify real sign-in, sign-out, and session restoration with an account.
 - [ ] Consolidate the partial authentication adapter into the official Clerk Vue integration and backend verification.
 - [ ] Implement create/join/list room flows with server-side membership checks.
 - [ ] Use a replaceable repository interface; any interim in-memory storage remains test/development-only.
@@ -220,6 +218,8 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [ ] Implement WebSocket authentication, expiry handling, heartbeat, and disconnect cleanup.
 
 **Deliverables:** Clerk UI integration, protected routes, room service, and protocol documentation.
+
+**Verified progress:** Build/type-check and read-only lint pass. Edge loaded the live signed-out state and opened Clerk's sign-in modal. Header layouts at 320–1280 px and blank-key local drawing passed. SDK-boundary simulations covered loading, signed-in name/menu, and sign-out UI; real account authentication/restoration remains unverified. `services/auth.ts` still manually loads Clerk scripts and needs consolidation before room integration. No room acceptance criterion is complete.
 
 **Acceptance checklist:**
 
@@ -245,6 +245,8 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [ ] Add connection feedback and navigation warnings for unacknowledged work.
 
 **Deliverables:** Integrated WebSocket client/store, ordered room state, recovery UI, and concurrency tests.
+
+**Existing draft:** `frontend/src/stores/board.ts` contains connection, token refresh, pending operation, and retry logic; `backend/src/application.js` and `queue.js` contain room messaging and serialized work. These paths have not been verified through authenticated multi-user workflows. Preview throttling and client/UI wiring still require review.
 
 **Acceptance checklist:**
 
@@ -275,6 +277,8 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [ ] Document database backup and restore procedures.
 
 **Deliverables:** Migrations, repositories, save/open endpoints, gallery, and persistence tests.
+
+**Existing draft:** `backend/migrations/001_initial.sql`, `scripts/migrate.js`, and `src/repository.js` define schema/migration and room/operation/snapshot persistence code. Their presence is not evidence of a migration applied to Supabase or a successful save. The gallery remains a placeholder; all persistence acceptance criteria remain open.
 
 **Acceptance checklist:**
 
@@ -344,6 +348,7 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Implementation checklist, in order:**
 
+- [x] Four Node drawing tests: coordinate clamping, point limits, ordered replay, and circle geometry.
 - [ ] Add Vitest/Vue Test Utils coverage for geometry, renderer behavior, and UI state.
 - [ ] Test HTTP/WS authorization, ordering, retries, and persistence with Node's test runner.
 - [ ] Isolate database tests from development/demo data.
@@ -353,6 +358,8 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [ ] Record browser compatibility, latency, and known limitations.
 
 **Deliverables:** Test suites, CI workflow, acceptance matrix, and measured results.
+
+**Current verification:** `node --test frontend/tests/drawing.test.mjs` passes all four tests; backend syntax checks pass. Frontend build/type-check/lint and browser evidence are summarized in Phases 2–4. Backend `npm test` is still a placeholder; Vitest, Vue Test Utils, Playwright, and CI are not configured.
 
 **Acceptance checklist:**
 
@@ -401,6 +408,8 @@ Recheck current limits before deployment: [Supabase pricing](https://supabase.co
 
 **Implementation checklist, in order:**
 
+- [x] Maintain `AGENTS.md`, the phased plan, and verified progress records.
+- [x] Vietnamese function comments in frontend drawing/Studio/stores and backend startup, validation, and persistence modules.
 - [ ] Replace starter documentation with Windows/PowerShell setup and troubleshooting.
 - [ ] Document environment variables, scripts, migrations, backups, and Docker commands.
 - [ ] Produce architecture, ER, and synchronization diagrams.
@@ -430,8 +439,8 @@ Assume **8–10 weeks at 12–15 hours/week**: weeks 1–2 for foundations/tools
 
 ## First phase and final completion gate
 
-Phase 1 remains deferred at the user's request. Phase 2 is complete; continue with Phase 3 one step at a time when requested. Phase 1's runtime and configuration prerequisites must be resolved before backend integration.
+Phase 1 remains deferred overall at the user's request. Phase 2 and local Phase 3 acceptance have passed; shared-room indicators wait for Phase 4. Next, consolidate the partial authentication adapter with the SDK, then verify real sign-in/out and restored sessions before room integration. Resolve Phase 1's Node, backend dependency, and configuration prerequisites before backend integration.
 
 The project is complete only when all requested tools, authenticated rooms, real-time collaboration, consistent reconnection, durable operations, shared checkpoints, private snapshots, and reopen workflows pass locally and on the approved demo deployment, with reproducible documentation and test evidence.
 
-**Current scope:** Phase 2 is accepted. Phase 3 has its drawing tools, color/size controls, separate preview canvas, Studio keyboard accessibility, local undo/redo, responsive Studio layout, Studio action feedback, and a styled new-page confirmation complete; the remaining items are pending. Follow the user's requested step before continuing.
+**Current scope:** Personal drawing, Clerk setup, header controls, and the live sign-in modal are verified. Real authenticated sessions, shared rooms, real-time collaboration, Supabase saves/copies, Docker, and deployment remain pending integration and acceptance. Continue one requested step at a time.

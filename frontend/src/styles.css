@@ -30,6 +30,14 @@ svg { display: block; }
 .main-nav a:hover, .main-nav a.router-link-exact-active { color: #263b53; }
 .header-action { background: #263b53; color: #fff; padding: 13px 20px; border-radius: 11px; display: inline-flex; align-items: center; gap: 24px; font-size: 13px; font-weight: 700; white-space: nowrap; transition: transform .2s, background .2s; }
 .header-action:hover, .button-primary:hover { transform: translateY(-2px); background: #35546f; }
+/* Nhóm tài khoản dùng chung màu với thanh điều hướng; tên dài được rút gọn để không đẩy canvas ra ngoài màn hình. */
+.header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.auth-controls, .auth-user-menu { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.auth-status { max-width: 150px; color: #707d88; font-size: 12px; line-height: 1.5; }
+.auth-sign-in { min-height: 44px; padding: 10px 15px; border: 1px solid #d9e1dc; border-radius: 11px; background: white; color: #263b53; font-size: 13px; font-weight: 700; white-space: nowrap; }
+.auth-sign-in:hover { border-color: #8ba477; background: #f5f8f2; }
+.auth-user-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; }
+.auth-user-trigger { min-width: 44px; min-height: 44px; }
 .site-footer { margin-top: auto; padding: 27px max(52px, calc((100vw - 1450px) / 2)); border-top: 1px solid #e8ebe5; color: #8b979c; font-size: 12px; display: flex; justify-content: space-between; gap: 16px; }
 
 h1, h2, h3, p { margin-top: 0; }
@@ -153,6 +161,9 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
 .placeholder-card > p:not(.eyebrow) { max-width: 480px; margin: 0 auto 28px; color: #7a8992; line-height: 1.7; font-size: 14px; }
 
 @media (max-width: 1050px) {
+  /* Tách điều hướng xuống hàng ở màn hình vừa để chừa chỗ cho nút tài khoản. */
+  .site-header { height: auto; min-height: 88px; flex-wrap: wrap; padding-top: 16px; padding-bottom: 16px; gap: 16px; }
+  .main-nav { order: 3; width: 100%; justify-content: center; }
   .hero { gap: 30px; min-height: 590px; }
   .hero-art-paper { min-height: 380px; }
   .studio-layout { grid-template-columns: 1fr; }
@@ -165,6 +176,9 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
   .brand { font-size: 21px; }
   .main-nav { order: 3; width: 100%; justify-content: space-around; gap: 9px; border-top: 1px solid #e9ece5; padding-top: 10px; }
   .header-action { padding: 10px 12px; font-size: 11px; gap: 7px; }
+  /* Trên điện thoại, nhóm tài khoản có một hàng riêng để các nút còn đủ vùng chạm. */
+  .header-actions { order: 2; width: 100%; justify-content: space-between; gap: 10px; }
+  .header-actions .header-action { min-height: 44px; }
   .site-footer { padding: 23px 18px; flex-direction: column; }
   .hero { display: flex; flex-direction: column; align-items: stretch; gap: 40px; padding: 54px 0 45px; min-height: unset; }
   .hero h1 { font-size: clamp(43px, 9vw, 66px); }

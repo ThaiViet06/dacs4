@@ -1,16 +1,7 @@
 import { reactive } from 'vue'
+// Dùng kiểu người dùng của SDK để tương thích với window.Clerk do @clerk/vue khai báo.
+import type { UserResource } from '@clerk/vue/types'
 
-interface ClerkUser { id: string; firstName: string | null; username: string | null }
-interface ClerkSession { getToken(options?: { skipCache: boolean }): Promise<string | null> }
-interface ClerkClient {
-  user: ClerkUser | null
-  session: ClerkSession | null
-  load(options: { ui: { ClerkUI: unknown } }): Promise<void>
-  addListener(callback: (state: { user: ClerkUser | null; session: ClerkSession | null }) => void): () => void
-  openSignIn(options?: { forceRedirectUrl: string }): void
-  signOut(): Promise<void>
-}
-declare global { interface Window { Clerk?: ClerkClient; __internal_ClerkUICtor?: unknown } }
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined
 export const auth = reactive({ configured: Boolean(publishableKey), ready: !publishableKey, userId: '', name: '', error: '' })
 let initialization: Promise<void> | undefined
@@ -46,8 +37,8 @@ export function initializeAuth() {
       await loadScript(`https://${domain}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`, publishableKey)
       if (!window.Clerk) throw new Error('Sign-in could not initialize. Please reload.')
       await window.Clerk.load({ ui: { ClerkUI: window.__internal_ClerkUICtor } })
-      // Cập nhật tên và ID khi tài khoản đăng nhập hoặc đăng xuất.
-      const update = ({ user }: { user: ClerkUser | null }) => {
+      // Cập nhật tài khoản; SDK có thể chưa gửi trường user khi đang khởi tạo phiên.
+      const update = ({ user }: { user?: UserResource | null }) => {
         auth.userId = user?.id || ''
         auth.name = user?.firstName || user?.username || 'Artist'
       }

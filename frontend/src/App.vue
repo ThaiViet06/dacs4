@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
+import AuthControls from './components/AuthControls.vue'
+import { clerkPublishableKey } from './services/clerk'
 </script>
 
 <template>
@@ -21,7 +23,12 @@ import { RouterLink, RouterView } from 'vue-router'
         <RouterLink to="/gallery">Bộ sưu tập</RouterLink>
       </nav>
 
-      <RouterLink class="header-action" to="/studio">Mở canvas <span aria-hidden="true">↗</span></RouterLink>
+      <div class="header-actions">
+        <RouterLink class="header-action" to="/studio">Mở canvas <span aria-hidden="true">↗</span></RouterLink>
+        <!-- Chỉ tạo component dùng Clerk khi plugin đã được cấu hình, tránh lỗi thiếu provider. -->
+        <AuthControls v-if="clerkPublishableKey" />
+        <span v-else class="auth-status" role="status">Đăng nhập chưa sẵn sàng</span>
+      </div>
     </header>
 
     <main id="main-content"><RouterView /></main>
