@@ -22,7 +22,7 @@ cd backend; npm run dev                     # Start the API with nodemon
 cd backend; npm start                       # Start the API with Node.js
 ```
 
-The backend currently has no automated tests; its `npm test` script is a placeholder and exits with an error.
+Run `cd backend; npm test` for authentication, room, HTTP, and WebSocket tests using Node's test runner, generated RSA keys, and in-memory/stub repositories; no database or Clerk credentials are required.
 
 ## Coding Style & Naming Conventions
 
@@ -30,7 +30,7 @@ Use two-space indentation and single quotes in TypeScript/Vue code, matching the
 
 ## Testing Guidelines
 
-No test framework or coverage threshold is configured yet. When adding tests, place them near the code under test or in a clearly named `tests/` directory, use descriptive names such as `router.spec.ts`, and document the new command in the relevant `package.json`.
+Backend tests live in `backend/tests/*.test.js`; frontend drawing tests run with `node --test frontend/tests/drawing.test.mjs` from the root. No coverage threshold is configured. Keep tests descriptive and document new commands in the relevant `package.json`.
 
 ## Commit & Pull Request Guidelines
 

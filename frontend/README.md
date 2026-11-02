@@ -25,6 +25,11 @@ See [Vite Configuration Reference](https://vite.dev/config/).
 
 ## Project Setup
 
+Use **Node 24**, version `24.15.0` or newer within that major version. The root
+`.nvmrc` and `.node-version` pin `24.22.2`; both applications declare `^24.15.0`.
+On Windows, use the [official Node 24.22.2 installer](https://nodejs.org/en/download/archive/v24.22.2),
+then open a new terminal and confirm `node --version` before running npm commands.
+
 ```sh
 npm install
 ```

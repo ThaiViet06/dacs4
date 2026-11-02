@@ -2,9 +2,9 @@
 
 ## Status and approval gate
 
-Last progress review: **2026-11-02**. Phase 2 and local Phase 3 criteria are accepted. Clerk UI and the shared SDK token adapter are checked; the user confirmed real sign-in, session restoration after reload, and sign-out. Backend token verification and shared-room indicators remain pending in Phase 4. Continue one requested step at a time.
+Last progress review: **2026-11-02**. Local Studio, frontend Clerk sessions, 39 backend tests, Supabase schema bootstrap, and backend health/readiness were verified. The frontend now has a room-creation form wired to the authenticated API; build/type-check, targeted lint/format checks, and four drawing tests pass. Real Clerk/JWKS room creation, browser acceptance, and room listing remain pending.
 
-Earlier implementation created partial backend modules, a SQL migration, environment examples, frontend drawing utilities, an authentication adapter, and a board store. These changes remain in the workspace and have not been accepted as a completed application. Review and verify them before continuing; do not assume any phase is complete.
+Continue one requested step at a time. Draft backend/frontend modules require integrated verification before acceptance.
 
 Checklist convention: `[ ]` means pending/unverified; `[x]` means verified. Update completed work in place with brief deliverables and test results; retain unfinished tasks and acceptance criteria in full.
 
@@ -12,15 +12,15 @@ Checklist convention: `[ ]` means pending/unverified; `[x]` means verified. Upda
 
 | Phase | Confirmed progress | Remaining work |
 | --- | --- | --- |
-| 1 — Environment | Root Git repository and ignore rules exist; environment examples and configuration code exist. | Deferred overall; align Node, correct backend metadata, install backend dependencies, and verify credentials/startup. |
+| 1 — Environment | Runtime, configuration, dependencies, Supabase schema/TLS, and backend startup checked. | Deferred overall; address remaining setup/audit tasks and live Clerk integration. |
 | 2 — Canvas foundation | Accepted: routes, local freehand drawing, logical coordinates, high-DPI rendering, resize replay, and pointer cancellation. | None within its accepted scope. |
 | 3 — Tools/UI | Local Studio acceptance passed, including all tools, previews, undo/redo, responsive layout, feedback, and reset confirmation. | Shared-room details and connection indicators during Phase 4. |
-| 4 — Authentication/rooms | Clerk frontend configuration/UI/token adapter checked; real sign-in/out and restored sessions confirmed manually by the user. | Review backend modules/prerequisites, verify backend tokens, and implement protected rooms. |
+| 4 — Authentication/rooms | Sessions, offline auth/room tests, and backend health pass; create-room UI/service implemented with passing frontend checks. | Verify creation with real Clerk/Supabase, add room listing, then invitation joining. |
 | 5 — Synchronization | Draft WebSocket/queue/store logic exists. | Integrate room UI and verify ordering, isolation, previews, retries, and reconnection. |
-| 6 — Persistence | SQL migration and PostgreSQL repository source exist. | Apply migrations to an approved Supabase target and verify saves, snapshots, ownership, and restart recovery. |
+| 6 — Persistence | Supabase migration applied; four tables/RLS, checksum, rerun, and repository readiness verified. | Verify durable operations, snapshots, ownership, and restart recovery. |
 | 7 — Docker | No Docker packaging exists. | Complete packaging and container checks after the local MVP. |
-| 8 — Integration | Local Studio works independently. | Complete authenticated collaboration and save/reopen journeys. |
-| 9 — Testing | Four initial drawing tests pass; frontend build/type-check/lint and browser checks have passed. Backend syntax checks pass. | Vitest/Vue Test Utils, backend integration tests, Playwright, CI, and failure/load testing. |
+| 8 — Integration | Local Studio works; frontend room creation is wired but not accepted end to end. | Complete authenticated room, collaboration, and save/reopen journeys. |
+| 9 — Testing | Four drawing tests and 39 backend auth/room tests pass; frontend checks/browser evidence and backend syntax/imports are recorded. | Vitest/Vue Test Utils, live room/persistence integration tests, Playwright, CI, and failure/load testing. |
 | 10 — Deployment | No deployment has been verified. | Hosting configuration and approved deployment after local acceptance. |
 | 11 — Documentation | Contributor guide, phased plan, progress records, and Vietnamese function comments exist. | Reproducible setup guide, diagrams, report, and presentation materials. |
 
@@ -57,22 +57,9 @@ Clerk manages identity. Express enforces room membership and ownership. Supabase
 
 Defer shared-room undo/redo, layers, chat, public room discovery, offline editing, and horizontal backend scaling. Local Studio undo/redo is included in Phase 3.
 
-## Confirmed findings and remaining prerequisites
+## Workspace and prerequisites
 
-- Project root: `C:\Users\LENOVO\Desktop\DACS4`; applications are in `frontend/` and `backend/`.
-- The frontend now contains a working personal Studio. Gallery, room, and invitation views remain placeholders.
-- The backend now contains startup/configuration, HTTP/WebSocket, validation, queue, and PostgreSQL repository modules; these remain unverified as a running integrated service.
-- Existing frontend scripts include development, type-check, build, preview, lint, and formatting. The original backend test script is a placeholder.
-- Verified: frontend build/type-check/lint, drawing tests, Studio browser checks, and backend syntax. Backend runtime behavior remains unverified.
-- The inspected Node version is still 24.11.1. The frontend declares at least 24.12.0 for Node 24; some currently locked development tools require at least 24.15.0. Align Node with the installed toolchain before backend integration.
-- Git is initialized; ignore rules were verified for local environment files, dependencies, builds, and temporary artifacts.
-- Docker remains unavailable on the inspected shell's PATH; no Dockerfile exists.
-- `@clerk/vue@2.5.16` is installed in `frontend/` and recorded in its manifest and lockfile. `pg` and `@clerk/backend`, which are imported by backend startup, are neither declared nor installed in `backend/`.
-- Backend dotenv loading and configuration validation already exist in `backend/src/config.js`; `backend/package.json` still points `main` to nonexistent `index.js`.
-- Vite loads the local Clerk development publishable key. Live signed-out UI/modal and signed-out token blocking pass; the user confirmed real sign-in, reload restoration, and sign-out. Backend authorization, Supabase connectivity/migrations, Docker runtime, and deployment remain unverified.
-- The current backend environment example uses placeholders, but `HEAD` contains a concrete Clerk secret matching the local key. Rotate it in Clerk before backend integration or further publishing; removing it from the working file does not revoke the committed key.
-
-Assume Windows, PowerShell, VS Code, internet access for Clerk/Supabase, one backend process, and a single student developer. Never copy secrets into this document.
+Root: `C:\Users\LENOVO\Desktop\DACS4`, with independent `frontend/` and `backend/` applications. Assume Windows, PowerShell, VS Code, one backend process, and a single student developer. Gallery contains the new create-room form; room listing, room view, and invitation integration remain pending. Docker was unavailable on the last inspected PATH and no Dockerfile exists. Never copy secrets into this document.
 
 ## Architecture and behavior contracts
 
@@ -132,28 +119,31 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Objective:** Establish a reproducible foundation and review the interrupted changes.
 
-**Prerequisites:** Explicit approval to resume implementation; access to the existing workspace.
+**Prerequisites:** Existing workspace and local Windows tooling. Phase 1 remains deferred overall; completed setup is summarized below.
 
 **Implementation checklist, in order:**
 
 - [ ] Review partial source changes against this plan and identify unfinished integration.
-- [ ] Upgrade/align local Node to a supported Node 24 release satisfying the locked toolchain requirements (currently `>=24.15.0`).
-- [x] Git initialized; local environment, dependency, and build paths are ignored and untracked.
-- [ ] Rotate the previously committed Clerk secret; keep environment examples free of credentials and review Git history before publishing.
-- [ ] Correct backend package metadata, load environment configuration, and validate required variables.
+- [x] Node 24.22.2/npm 11.19.1, version pins, engines (`^24.15.0`), imports, lockfiles, and 333 dependency engine ranges checked; Git initialized and generated/local files ignored.
+- [x] Clerk secret replacement reported by the user; local environment files ignored and backend example uses placeholders. Clerk-side revocation was not independently checked.
+- [ ] Review Git history for credentials before publishing; never commit replacement keys.
+- [x] Backend entry is `server.js`; configuration loads system variables → `.env.local` → `.env` and rejects missing/blank/template values without revealing secrets.
 - [ ] Review environment examples and read-only check scripts.
-- [ ] Install approved dependencies and update lockfiles consistently.
-- [ ] Prepare Clerk development settings and a Supabase development database without exposing credentials.
+- [x] Install and check `@clerk/vue@2.5.16`, `pg@8.23.1`, and `@clerk/backend@3.26.5` with matching manifests/lockfiles.
+- [ ] Resolve the existing development-only `nodemon → minimatch` audit findings (2 moderate entries; [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)).
+- [x] Verify live Supabase Session Pooler connectivity through `pg`: login, encrypted TLS with certificate verification, and read-only `SELECT 1` pass.
+- [ ] Finish live Clerk backend integration; keep credentials in ignored local/runtime configuration. Supabase schema setup is verified in Phase 6.
 
-**Existing artifacts:** Dotenv loading, configuration validation, and environment examples are present. The approved frontend Clerk SDK installation is complete; the broader dependency/setup task remains open because backend `pg` and `@clerk/backend`, runtime alignment, and service configuration are pending. Phase 1 remains deferred overall.
+**Verified setup:** READMEs cover runtime and configuration; frontend checks and backend syntax/imports passed. Production audit reported zero findings; two existing dev-only moderate entries remain. Supabase tables, repository readiness, real backend startup on port 3000, and graceful shutdown now pass.
 
 **Deliverables:** Reviewed baseline, runtime requirements, environment examples, scripts, and reproducible dependency manifests/lockfiles.
 
 **Acceptance checklist:**
 
-- [ ] Frontend and backend start independently with valid configuration.
-- [ ] Updated build/type-check/lint and backend syntax checks pass.
-- [ ] Missing configuration reports variable names without revealing values.
+- [x] Start the backend with real configuration/Supabase; `/healthz` and `/readyz` return HTTP 200, and shutdown completes cleanly.
+- [ ] Recheck frontend/backend together during authenticated room integration.
+- [x] Updated build/type-check/lint and backend syntax checks pass on Node 24.22.2.
+- [x] Missing configuration reports variable names without revealing values.
 
 **Risk → response:** Environment setup can expand; defer Docker troubleshooting until the local MVP.
 
@@ -161,13 +151,11 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Status:** Accepted. Phase 1 was deferred by the user; implementation used the available local tooling.
 
-- [x] Home/Studio navigation and placeholder gallery, room, and invitation routes.
-- [x] Drawing types, reusable renderer, Pinia state, and local freehand canvas.
-- [x] Logical coordinates, high-DPI rendering, resize replay, pointer capture, and cancellation.
+- [x] Routes/placeholders, drawing types/renderer, Pinia state, and local freehand canvas with logical coordinates, high-DPI rendering, resize replay, pointer capture, and cancellation.
 
 **Deliverables:** `DrawingCanvas.vue`, `drawing/model.ts`, `drawing/renderer.ts`, stores, and views under `frontend/src/`.
 
-**Verified:** Build/type-check, read-only lint, drawing tests, and browser checks passed. Drawing proportions survive resize; the canvas uses a 2× backing store at DPR 2; releasing outside ends a gesture; cancellation leaves no operation.
+**Verified:** Build/type-check, read-only lint, tests, and browser checks passed: resize preserves proportions, DPR 2 is sharp, outside release ends drawing, and cancellation leaves no operation.
 
 ## Phase 3 — Drawing tools and interface
 
@@ -177,23 +165,14 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Implementation checklist, in order:**
 
-- [x] Freehand, line, rectangle, circle, and eraser tools with separate previews and commits on release.
-- [x] Color and width controls (1–50 px), with independent brush and eraser sizes.
-- [x] P/L/R/C/E tool shortcuts and local undo/redo with Ctrl+Z, Ctrl+Y, and Ctrl+Shift+Z.
-- [x] Accessible labels/focus, live tool/count status, disabled-action hints, and temporary action feedback.
-- [x] Responsive Studio layout and styled new-page confirmation protecting drawing and redo history.
+- [x] Five tools, separate previews, color/width controls (1–50 px), and independent brush/eraser sizes.
+- [x] P/L/R/C/E shortcuts and local undo/redo with Ctrl+Z, Ctrl+Y, and Ctrl+Shift+Z.
+- [x] Responsive Studio, accessible controls/status, action feedback, and styled reset confirmation protecting drawing/redo history.
 - [ ] Add room information and connection indicators when shared-room flows are integrated.
 
 **Deliverables:** Tool toolbar, preview layer, studio layout, and tool-state controls.
 
-**Acceptance checklist:**
-
-- [x] Tools work in all drag directions; circles follow the defined geometry.
-- [x] Erasing remains correct after replay.
-- [x] Selected tools are clear to keyboard and screen-reader users.
-- [x] Disabled Studio actions are clear.
-
-**Verified:** Build/type-check, read-only lint, and four drawing tests passed. Chrome/Edge checks covered 20 gestures across five tools/four directions, previews before commit, degenerate shape rejection, cancellation, color/width, eraser replay, keyboard guards, undo/redo, feedback, and reset cancellation/confirmation. Emulated widths of 320–1280 px preserved the 16:9 canvas without horizontal overflow; DPR 2 and simulated touch were checked. Physical-phone testing has not been recorded.
+**Verified local acceptance:** Checks and four drawing tests passed. Chrome/Edge verified all tools/drag directions, geometry, eraser replay, previews/cancellation, shortcuts, undo/redo, action accessibility, and reset behavior. Emulated 320–1280 px layouts, DPR 2, and touch passed; physical-phone testing is not recorded.
 
 **Risk → response:** Preview artifacts can alter committed content; isolate preview rendering.
 
@@ -203,27 +182,28 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Objective:** Establish authenticated room access and communication.
 
-**Depends on:** Phases 1–3; configured Clerk development instance.
+**Depends on:** Accepted frontend foundations, configured Clerk, and the early database bootstrap described in Phase 6. Other Phase 1 work remains deferred overall.
 
 **Implementation checklist, in order:**
 
 - [ ] Review server startup, HTTP, authentication, room, and WebSocket module boundaries.
-- [x] Install `@clerk/vue@2.5.16` and update the npm manifest/lockfile.
-- [x] Register conditional `clerkPlugin` in `main.ts`; document `.env.local` setup and use SDK-compatible types.
-- [x] Prepare ignored `.env.local` and a blank `.env.example` for Clerk configuration.
-- [x] Set a nonblank development publishable key locally; Vite recognizes it.
-- [x] Add header loading/delayed, signed-out, and signed-in controls using `SignInButton`, `UserButton`, and `useUser`; share configuration with plugin startup.
-- [x] Verify real sign-in, sign-out, and session restoration after reload (manual confirmation by the user on 2026-11-02).
-- [x] Replace manual Clerk loading/state in `auth.ts` with SDK `getToken`; keep API/WebSocket calls and fresh-token behavior compatible.
-- [ ] Verify backend Clerk token signature, issuer, expiry, and allowed-origin checks.
-- [ ] Implement create/join/list room flows with server-side membership checks.
-- [ ] Use a replaceable repository interface; any interim in-memory storage remains test/development-only.
-- [ ] Add health checks, exact origin restrictions, request/message validation, and structured errors.
-- [ ] Implement WebSocket authentication, expiry handling, heartbeat, and disconnect cleanup.
+- [x] Clerk plugin, local configuration, header account controls, and SDK `getToken` adapter integrated; real sign-in/reload/sign-out confirmed by the user.
+- [x] Shared backend token verifier checks signature, issuer, expiry, origin, and session claims with real SDK/offline RSA fixtures.
+- [x] Development/test `MemoryRepository` create/list/metadata ownership checks pass; normal `server.js` startup uses `PostgresRepository`.
+- [x] Start the PostgreSQL-backed backend after bootstrap; health/readiness return 200 and unauthenticated `GET /api/rooms` returns 401 (`AUTH_REQUIRED`).
+- [x] Add `CreateRoomForm.vue` to Gallery, typed `services/rooms.ts`, and structured `ApiError` codes; send only the trimmed title through the existing Clerk-token API helper. Frontend build/type-check, targeted lint/formatting, and four drawing tests pass.
+- [ ] Verify real account tokens and Clerk JWKS retrieval during authenticated room integration.
+- [ ] Accept the create-room form in a browser: signed-out/loading states, name validation, duplicate-submit prevention, success/error feedback, responsive layout, and clearing stale results on sign-out/account changes.
+- [ ] Verify actual room creation with Clerk/Supabase: server-assigned ownership, first membership, visible success only after persistence, and no false success on failure.
+- [ ] Add frontend room listing; verify only the signed-in user's memberships appear and created rooms remain available after reload.
+- [ ] Integrate invitation joining, member-only room metadata, and owner-only invitation replacement; test two real accounts.
+- [ ] Keep repositories injectable and memory storage limited to isolated development/tests; a separate memory runner is no longer a prerequisite.
+- [ ] Review/complete health checks, exact origin restrictions, request/message validation, and structured errors.
+- [ ] Complete and verify WebSocket authentication, expiry handling, heartbeat, and disconnect cleanup.
 
 **Deliverables:** Clerk UI integration, protected routes, room service, and protocol documentation.
 
-**Verified progress:** Earlier build/type-check/lint and SDK simulations passed, including API Bearer headers and fresh WebSocket tokens. Live browser checks confirm SDK loading, the sign-in modal, signed-out token blocking/reload, and Studio access; earlier checks covered 320–1280 px headers. The user manually confirmed real sign-in, restored sessions after reload, and sign-out. Backend authorization and all room acceptance criteria remain unverified.
+**Verified progress:** 39 earlier backend tests cover offline auth/in-memory rooms; live backend health/readiness, unauthenticated rejection, and shutdown pass. Creation UI/API wiring and Vietnamese function comments are present; frontend checks pass. Browser smoke checking did not complete in this pass, and no real authenticated room write has been verified. Listing/joining are not implemented in the UI yet.
 
 **Acceptance checklist:**
 
@@ -261,19 +241,20 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Risk → response:** Erasing is order-sensitive; replay server-ordered operations.
 
-**Interim limit:** Durable restart recovery is completed in Phase 6.
+**Verification limit:** Database bootstrap does not prove operation durability; transactional persistence and restart recovery are accepted in Phase 6.
 
 ## Phase 6 — Supabase persistence and snapshots
 
 **Objective:** Persist completed drawing operations and provide the personal gallery.
 
-**Depends on:** Phase 5; Supabase credentials and approved migration target.
+**Depends on:** Supabase credentials and the agreed development target for database bootstrap; Phase 5 for full operation/snapshot acceptance. Run bootstrap before Phase 4 live backend integration because `server.js` already requires PostgreSQL tables.
 
 **Implementation checklist, in order:**
 
-- [ ] Review/apply versioned migrations for the private application schema.
-- [ ] Configure TLS, bounded connection pool, and operation repositories.
-- [ ] Replace interim storage with Supabase-backed room/membership/operation persistence.
+- [x] Live connection through `pg@8.23.1`, TLS certificate verification, and read-only `SELECT 1` pass against Supabase Session Pooler (port 5432).
+- [x] Review/apply `001_initial.sql` using `scripts/migrate.js`; migration record/checksum match and rerunning leaves one migration record.
+- [x] Verify `drawing.rooms`, `drawing.room_members`, `drawing.room_operations`, and `drawing.saved_drawings` exist with RLS enabled; repository readiness passes.
+- [ ] Verify bounded pooling, timeouts, and PostgreSQL room/membership/operation repositories under real queries and failures.
 - [ ] Commit operation insertion and sequence allocation atomically before acknowledgement.
 - [ ] Add owner-only shared checkpoints and member-created private snapshots.
 - [ ] Add owned/joined rooms and private copies to the gallery, with vector-generated thumbnails.
@@ -282,7 +263,7 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Deliverables:** Migrations, repositories, save/open endpoints, gallery, and persistence tests.
 
-**Existing draft:** `backend/migrations/001_initial.sql`, `scripts/migrate.js`, and `src/repository.js` define schema/migration and room/operation/snapshot persistence code. Their presence is not evidence of a migration applied to Supabase or a successful save. The gallery remains a placeholder; all persistence acceptance criteria remain open.
+**Confirmed boundary:** Migration created the four application tables and `drawing.schema_migrations`; only schema/metadata and readiness were checked. Authenticated room writes, operation persistence, save/load, ownership, and durability remain unverified. Database bootstrap alone does not complete Phase 6.
 
 **Acceptance checklist:**
 
@@ -352,7 +333,9 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Implementation checklist, in order:**
 
-- [x] Four Node drawing tests: coordinate clamping, point limits, ordered replay, and circle geometry.
+- [x] Four drawing tests and 39 offline backend tests (28 auth/HTTP/WS and 11 repository/HTTP room cases) pass; a separate read-only live Supabase connection check also passes.
+- [x] Live database bootstrap/startup smoke check: migration checksum/rerun, four tables/RLS, repository readiness, HTTP health/readiness, unauthenticated API rejection, and graceful shutdown pass.
+- [x] Create-room frontend changes pass production build/type-check, targeted Oxlint/ESLint, formatting, and the four existing drawing tests.
 - [ ] Add Vitest/Vue Test Utils coverage for geometry, renderer behavior, and UI state.
 - [ ] Test HTTP/WS authorization, ordering, retries, and persistence with Node's test runner.
 - [ ] Isolate database tests from development/demo data.
@@ -363,7 +346,7 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Deliverables:** Test suites, CI workflow, acceptance matrix, and measured results.
 
-**Current verification:** `node --test frontend/tests/drawing.test.mjs` passes all four tests; backend syntax checks pass. Frontend build/type-check/lint and browser evidence are summarized in Phases 2–4. Backend `npm test` is still a placeholder; Vitest, Vue Test Utils, Playwright, and CI are not configured.
+**Commands/evidence:** `node --test frontend/tests/drawing.test.mjs` from the root; `npm test` from `backend/`. Frontend build/type-check, targeted lint/formatting, and four drawing tests were rerun for room creation and pass; 39 backend tests remain the prior verified result. Live database bootstrap/startup checks are separate smoke checks. Browser creation acceptance, Vitest, Vue Test Utils, Playwright, CI, and authenticated room/persistence suites remain pending.
 
 **Acceptance checklist:**
 
@@ -412,8 +395,7 @@ Recheck current limits before deployment: [Supabase pricing](https://supabase.co
 
 **Implementation checklist, in order:**
 
-- [x] Maintain `AGENTS.md`, the phased plan, and verified progress records.
-- [x] Vietnamese function comments in frontend drawing/Studio/stores and backend startup, validation, and persistence modules.
+- [x] Contributor guide, phased progress plan, and Vietnamese function comments maintained in implemented frontend/backend modules.
 - [ ] Replace starter documentation with Windows/PowerShell setup and troubleshooting.
 - [ ] Document environment variables, scripts, migrations, backups, and Docker commands.
 - [ ] Produce architecture, ER, and synchronization diagrams.
@@ -437,14 +419,16 @@ Frontend public build-time variables: `VITE_API_BASE_URL`, `VITE_WS_URL`, and `V
 
 Backend runtime variables: `PORT`, `NODE_ENV`, `ALLOWED_ORIGINS`, `DATABASE_URL`, database TLS/CA settings, `CLERK_PUBLISHABLE_KEY`, and `CLERK_SECRET_KEY`. Never put database credentials or secret keys in `VITE_*` variables. Separate test/development/demo database targets.
 
-Sequence: **1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11**. Testing and documentation begin early; their final phases consolidate evidence.
+Current sequence: **Phase 4 room UI/live Clerk → Phase 5 synchronization → remaining Phase 6 persistence/snapshots → Phases 7–11**. Phases 2–3 local acceptance and early Phase 6 database bootstrap/backend health checks are complete; remaining Phase 1 tasks stay tracked. Testing and documentation continue throughout.
 
 Assume **8–10 weeks at 12–15 hours/week**: weeks 1–2 for foundations/tools, 3–4 for rooms/synchronization, 5–6 for persistence/gallery, week 7 for Docker/integration, week 8 for testing/deployment, and weeks 9–10 for documentation and contingency.
 
-## First phase and final completion gate
+## Next step and final completion gate
 
-Phase 1 remains deferred overall at the user's request. Phase 2 and local Phase 3 acceptance have passed; shared-room indicators wait for Phase 4. Frontend Clerk session checks are complete. Next, review backend startup/authentication module boundaries, then implement and verify backend Clerk token checks. Resolve Node, backend dependency/configuration prerequisites, and the committed-secret rotation before backend integration.
+**Next small step:** Verify the existing create-room form at `/gallery` with a real signed-in Clerk account and the PostgreSQL-backed API. Check token/JWKS handling, successful room/member insertion, server-assigned ownership, browser behavior, and useful error states. The frontend is wired; this acceptance is still pending.
+
+After creation is accepted, implement the room list and reload persistence/ownership checks. Invitation joining with two accounts follows afterward; do not start collaboration or snapshot features in this step.
+
+Database bootstrap and live backend health checks are complete. The temporary backend process was stopped after verification; run `npm start` from `backend/` for local development. Keep the memory repository for isolated tests. Continue one requested step at a time.
 
 The project is complete only when all requested tools, authenticated rooms, real-time collaboration, consistent reconnection, durable operations, shared checkpoints, private snapshots, and reopen workflows pass locally and on the approved demo deployment, with reproducible documentation and test evidence.
-
-**Current scope:** Personal drawing, Clerk frontend sessions, and the shared SDK token adapter are checked. Backend authorization, shared rooms, real-time collaboration, Supabase saves/copies, Docker, and deployment remain pending integration and acceptance. Continue one requested step at a time.

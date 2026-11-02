@@ -1,12 +1,17 @@
 const fs = require("node:fs");
 const path = require("node:path");
-require("dotenv").config({ path: path.join(__dirname, "../.env"), quiet: true });
+// Ưu tiên biến hệ thống, rồi .env.local, cuối cùng .env; đường dẫn không phụ thuộc thư mục chạy lệnh.
+require("dotenv").config({
+  path: [path.join(__dirname, "../.env.local"), path.join(__dirname, "../.env")],
+  override: false,
+  quiet: true,
+});
 
-// Đọc và kiểm tra biến môi trường trước khi tạo kết nối và mở máy chủ.
+// Kiểm tra cấu hình trước khi kết nối; lỗi chỉ nêu tên biến cần sửa, không hiển thị giá trị bí mật.
 function readConfig(env = process.env) {
   const missing = ["DATABASE_URL", "CLERK_PUBLISHABLE_KEY", "CLERK_SECRET_KEY", "ALLOWED_ORIGINS"]
-    .filter((name) => !env[name] || /REPLACE_ME|PASSWORD|PROJECT/.test(env[name]));
-  if (missing.length) throw new Error(`Configure these variables in backend/.env: ${missing.join(", ")}`);
+    .filter((name) => !env[name]?.trim() || /REPLACE_ME|PASSWORD|PROJECT|your-(publishable|secret)-key-here/.test(env[name]));
+  if (missing.length) throw new Error(`Configure these variables in the environment or backend/.env.local (fallback: backend/.env): ${missing.join(", ")}`);
   const port = Number(env.PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be between 1 and 65535.");
   const origins = env.ALLOWED_ORIGINS.split(",").map((origin) => origin.trim());
