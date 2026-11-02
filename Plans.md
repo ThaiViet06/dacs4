@@ -2,7 +2,7 @@
 
 ## Status and approval gate
 
-Last progress review: **2026-10-30**. Phase 2 and local Phase 3 criteria are accepted. Clerk SDK/plugin registration, account controls, and the live sign-in modal are verified. Real authenticated sessions and shared-room indicators remain pending in Phase 4. Continue one requested step at a time.
+Last progress review: **2026-11-02**. Phase 2 and local Phase 3 criteria are accepted. Clerk UI and the shared SDK token adapter are checked; the user confirmed real sign-in, session restoration after reload, and sign-out. Backend token verification and shared-room indicators remain pending in Phase 4. Continue one requested step at a time.
 
 Earlier implementation created partial backend modules, a SQL migration, environment examples, frontend drawing utilities, an authentication adapter, and a board store. These changes remain in the workspace and have not been accepted as a completed application. Review and verify them before continuing; do not assume any phase is complete.
 
@@ -15,7 +15,7 @@ Checklist convention: `[ ]` means pending/unverified; `[x]` means verified. Upda
 | 1 — Environment | Root Git repository and ignore rules exist; environment examples and configuration code exist. | Deferred overall; align Node, correct backend metadata, install backend dependencies, and verify credentials/startup. |
 | 2 — Canvas foundation | Accepted: routes, local freehand drawing, logical coordinates, high-DPI rendering, resize replay, and pointer cancellation. | None within its accepted scope. |
 | 3 — Tools/UI | Local Studio acceptance passed, including all tools, previews, undo/redo, responsive layout, feedback, and reset confirmation. | Shared-room details and connection indicators during Phase 4. |
-| 4 — Authentication/rooms | SDK/plugin, local publishable key, header account controls, and live sign-in modal verified. | Consolidate the auth adapter; verify real sign-in/out, restored sessions, and protected room workflows. |
+| 4 — Authentication/rooms | Clerk frontend configuration/UI/token adapter checked; real sign-in/out and restored sessions confirmed manually by the user. | Review backend modules/prerequisites, verify backend tokens, and implement protected rooms. |
 | 5 — Synchronization | Draft WebSocket/queue/store logic exists. | Integrate room UI and verify ordering, isolation, previews, retries, and reconnection. |
 | 6 — Persistence | SQL migration and PostgreSQL repository source exist. | Apply migrations to an approved Supabase target and verify saves, snapshots, ownership, and restart recovery. |
 | 7 — Docker | No Docker packaging exists. | Complete packaging and container checks after the local MVP. |
@@ -69,7 +69,8 @@ Defer shared-room undo/redo, layers, chat, public room discovery, offline editin
 - Docker remains unavailable on the inspected shell's PATH; no Dockerfile exists.
 - `@clerk/vue@2.5.16` is installed in `frontend/` and recorded in its manifest and lockfile. `pg` and `@clerk/backend`, which are imported by backend startup, are neither declared nor installed in `backend/`.
 - Backend dotenv loading and configuration validation already exist in `backend/src/config.js`; `backend/package.json` still points `main` to nonexistent `index.js`.
-- The Clerk development publishable key is configured in ignored `frontend/.env.local`; the live signed-out state and sign-in modal work. Authenticated sessions, Supabase connectivity/migrations, Docker runtime, and deployment remain unverified.
+- Vite loads the local Clerk development publishable key. Live signed-out UI/modal and signed-out token blocking pass; the user confirmed real sign-in, reload restoration, and sign-out. Backend authorization, Supabase connectivity/migrations, Docker runtime, and deployment remain unverified.
+- The current backend environment example uses placeholders, but `HEAD` contains a concrete Clerk secret matching the local key. Rotate it in Clerk before backend integration or further publishing; removing it from the working file does not revoke the committed key.
 
 Assume Windows, PowerShell, VS Code, internet access for Clerk/Supabase, one backend process, and a single student developer. Never copy secrets into this document.
 
@@ -138,6 +139,7 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [ ] Review partial source changes against this plan and identify unfinished integration.
 - [ ] Upgrade/align local Node to a supported Node 24 release satisfying the locked toolchain requirements (currently `>=24.15.0`).
 - [x] Git initialized; local environment, dependency, and build paths are ignored and untracked.
+- [ ] Rotate the previously committed Clerk secret; keep environment examples free of credentials and review Git history before publishing.
 - [ ] Correct backend package metadata, load environment configuration, and validate required variables.
 - [ ] Review environment examples and read-only check scripts.
 - [ ] Install approved dependencies and update lockfiles consistently.
@@ -208,10 +210,12 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 - [ ] Review server startup, HTTP, authentication, room, and WebSocket module boundaries.
 - [x] Install `@clerk/vue@2.5.16` and update the npm manifest/lockfile.
 - [x] Register conditional `clerkPlugin` in `main.ts`; document `.env.local` setup and use SDK-compatible types.
-- [x] Configure the development publishable key in ignored `.env.local`; keep `.env.example` blank.
+- [x] Prepare ignored `.env.local` and a blank `.env.example` for Clerk configuration.
+- [x] Set a nonblank development publishable key locally; Vite recognizes it.
 - [x] Add header loading/delayed, signed-out, and signed-in controls using `SignInButton`, `UserButton`, and `useUser`; share configuration with plugin startup.
-- [ ] Verify real sign-in, sign-out, and session restoration with an account.
-- [ ] Consolidate the partial authentication adapter into the official Clerk Vue integration and backend verification.
+- [x] Verify real sign-in, sign-out, and session restoration after reload (manual confirmation by the user on 2026-11-02).
+- [x] Replace manual Clerk loading/state in `auth.ts` with SDK `getToken`; keep API/WebSocket calls and fresh-token behavior compatible.
+- [ ] Verify backend Clerk token signature, issuer, expiry, and allowed-origin checks.
 - [ ] Implement create/join/list room flows with server-side membership checks.
 - [ ] Use a replaceable repository interface; any interim in-memory storage remains test/development-only.
 - [ ] Add health checks, exact origin restrictions, request/message validation, and structured errors.
@@ -219,7 +223,7 @@ Use server ping/pong heartbeats every thirty seconds. Reconnect with exponential
 
 **Deliverables:** Clerk UI integration, protected routes, room service, and protocol documentation.
 
-**Verified progress:** Build/type-check and read-only lint pass. Edge loaded the live signed-out state and opened Clerk's sign-in modal. Header layouts at 320–1280 px and blank-key local drawing passed. SDK-boundary simulations covered loading, signed-in name/menu, and sign-out UI; real account authentication/restoration remains unverified. `services/auth.ts` still manually loads Clerk scripts and needs consolidation before room integration. No room acceptance criterion is complete.
+**Verified progress:** Earlier build/type-check/lint and SDK simulations passed, including API Bearer headers and fresh WebSocket tokens. Live browser checks confirm SDK loading, the sign-in modal, signed-out token blocking/reload, and Studio access; earlier checks covered 320–1280 px headers. The user manually confirmed real sign-in, restored sessions after reload, and sign-out. Backend authorization and all room acceptance criteria remain unverified.
 
 **Acceptance checklist:**
 
@@ -439,8 +443,8 @@ Assume **8–10 weeks at 12–15 hours/week**: weeks 1–2 for foundations/tools
 
 ## First phase and final completion gate
 
-Phase 1 remains deferred overall at the user's request. Phase 2 and local Phase 3 acceptance have passed; shared-room indicators wait for Phase 4. Next, consolidate the partial authentication adapter with the SDK, then verify real sign-in/out and restored sessions before room integration. Resolve Phase 1's Node, backend dependency, and configuration prerequisites before backend integration.
+Phase 1 remains deferred overall at the user's request. Phase 2 and local Phase 3 acceptance have passed; shared-room indicators wait for Phase 4. Frontend Clerk session checks are complete. Next, review backend startup/authentication module boundaries, then implement and verify backend Clerk token checks. Resolve Node, backend dependency/configuration prerequisites, and the committed-secret rotation before backend integration.
 
 The project is complete only when all requested tools, authenticated rooms, real-time collaboration, consistent reconnection, durable operations, shared checkpoints, private snapshots, and reopen workflows pass locally and on the approved demo deployment, with reproducible documentation and test evidence.
 
-**Current scope:** Personal drawing, Clerk setup, header controls, and the live sign-in modal are verified. Real authenticated sessions, shared rooms, real-time collaboration, Supabase saves/copies, Docker, and deployment remain pending integration and acceptance. Continue one requested step at a time.
+**Current scope:** Personal drawing, Clerk frontend sessions, and the shared SDK token adapter are checked. Backend authorization, shared rooms, real-time collaboration, Supabase saves/copies, Docker, and deployment remain pending integration and acceptance. Continue one requested step at a time.
