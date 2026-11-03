@@ -46,6 +46,15 @@ npm run dev
 npm run build
 ```
 
+### Kiểm tra Canvas và kết nối phòng
+
+Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 16 test
+dùng Node test runner: 4 test tọa độ/replay và 12 test store WebSocket với token,
+socket, timer giả. Không cần Clerk, Supabase hoặc backend đang chạy. Các test
+kiểm tra xác thực, tải trạng thái, đổi phòng/đăng xuất, refresh token, phản hồi
+trễ, nét chờ/acknowledgement, thứ tự nét/tẩy và khóa gửi khi mất kết nối. Không
+thay thế kiểm tra hai tài khoản thật trên trình duyệt.
+
 ### Lint with [ESLint](https://eslint.org/)
 
 ```sh

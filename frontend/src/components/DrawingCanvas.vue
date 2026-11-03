@@ -3,18 +3,21 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { appendPoint, coordinates, HEIGHT, WIDTH, type Operation } from '../drawing/model'
 import { render } from '../drawing/renderer'
 
-const props = withDefaults(defineProps<{
-  operations: Operation[]
-  tool?: 'freehand' | 'line' | 'rectangle' | 'circle' | 'eraser'
-  color?: string
-  brushSize?: number
-  enabled?: boolean
-}>(), {
-  tool: 'freehand',
-  color: '#263b53',
-  brushSize: 4,
-  enabled: true,
-})
+const props = withDefaults(
+  defineProps<{
+    operations: Operation[]
+    tool?: 'freehand' | 'line' | 'rectangle' | 'circle' | 'eraser'
+    color?: string
+    brushSize?: number
+    enabled?: boolean
+  }>(),
+  {
+    tool: 'freehand',
+    color: '#263b53',
+    brushSize: 4,
+    enabled: true,
+  },
+)
 
 const emit = defineEmits<{ commit: [operation: Operation] }>()
 const canvas = ref<HTMLCanvasElement | null>(null)
@@ -105,16 +108,18 @@ function pointFrom(event: PointerEvent) {
 
 // Bắt đầu một nét mới, lưu công cụ hiện tại và giữ quyền theo dõi con trỏ.
 function start(event: PointerEvent) {
-  if (!props.enabled || !event.isPrimary || event.button !== 0 || active.value || !canvas.value) return
+  if (!props.enabled || !event.isPrimary || event.button !== 0 || active.value || !canvas.value)
+    return
   event.preventDefault()
   pointerId = event.pointerId
   const point = pointFrom(event)
   // Chốt màu và độ dày lúc bắt đầu để đổi điều khiển giữa chừng chỉ ảnh hưởng nét kế tiếp.
   const common = { id: crypto.randomUUID(), width: props.brushSize, color: props.color }
   // Bút và tẩy lưu đường đi; các hình lưu hai điểm, trong đó điểm đầu của hình tròn là tâm.
-  active.value = props.tool === 'freehand' || props.tool === 'eraser'
-    ? { ...common, type: props.tool, points: [point] }
-    : { ...common, type: props.tool, start: point, end: point }
+  active.value =
+    props.tool === 'freehand' || props.tool === 'eraser'
+      ? { ...common, type: props.tool, points: [point] }
+      : { ...common, type: props.tool, start: point, end: point }
   canvas.value.setPointerCapture(event.pointerId)
   // Theo dõi trên window để vẫn nhận pointerup nếu trình duyệt làm mất pointer capture ngoài canvas.
   window.addEventListener('pointermove', move)
@@ -127,7 +132,11 @@ function start(event: PointerEvent) {
 function move(event: PointerEvent) {
   if (!active.value || event.pointerId !== pointerId) return
   event.preventDefault()
-  if (active.value.type === 'line' || active.value.type === 'rectangle' || active.value.type === 'circle') {
+  if (
+    active.value.type === 'line' ||
+    active.value.type === 'rectangle' ||
+    active.value.type === 'circle'
+  ) {
     // Cập nhật điểm kéo của hình đang xem trước mà chưa ghi thêm thao tác vào bản vẽ.
     active.value = { ...active.value, end: pointFrom(event) }
   } else {
@@ -145,9 +154,13 @@ function move(event: PointerEvent) {
   requestPreviewRepaint()
 }
 
-// Kết thúc thao tác kéo và phát nét hợp lệ cho nơi lưu bản vẽ.
+// Kết thúc thao tác kéo; hủy nét nếu quyền vẽ mất trước pointerup, còn hợp lệ thì phát cho nơi lưu.
 function finish(event: PointerEvent) {
   if (!active.value || event.pointerId !== pointerId) return
+  if (!props.enabled) {
+    cancel()
+    return
+  }
   move(event)
   const operation = active.value
   active.value = null
@@ -155,13 +168,15 @@ function finish(event: PointerEvent) {
   window.removeEventListener('pointermove', move)
   window.removeEventListener('pointerup', finish)
   window.removeEventListener('pointercancel', cancelPointer)
-  if (canvas.value?.hasPointerCapture(event.pointerId)) canvas.value.releasePointerCapture(event.pointerId)
+  if (canvas.value?.hasPointerCapture(event.pointerId))
+    canvas.value.releasePointerCapture(event.pointerId)
   // Chữ nhật cần đủ hai chiều; đường thẳng và hình tròn cần bán kính/khoảng kéo khác 0.
-  const hasSize = operation.type === 'rectangle'
-    ? operation.start.x !== operation.end.x && operation.start.y !== operation.end.y
-    : operation.type === 'line' || operation.type === 'circle'
-      ? operation.start.x !== operation.end.x || operation.start.y !== operation.end.y
-      : true
+  const hasSize =
+    operation.type === 'rectangle'
+      ? operation.start.x !== operation.end.x && operation.start.y !== operation.end.y
+      : operation.type === 'line' || operation.type === 'circle'
+        ? operation.start.x !== operation.end.x || operation.start.y !== operation.end.y
+        : true
   if (hasSize) {
     emit('commit', operation)
   }
@@ -189,9 +204,20 @@ function cancelPointer(event: PointerEvent) {
 // Khi danh sách thao tác thay đổi, vẽ lại lớp canvas đã lưu.
 watch(() => props.operations, requestCommittedRepaint, { deep: true })
 // Khi quyền vẽ bị tắt, hủy nét dở để tránh lưu một thao tác không hợp lệ.
-watch(() => props.enabled, (enabled) => { if (!enabled) cancel() })
+watch(
+  () => props.enabled,
+  (enabled) => {
+    if (!enabled) cancel()
+  },
+  { flush: 'sync' },
+)
 // Khi đổi công cụ giữa lúc kéo, hủy nét để mỗi thao tác chỉ có một kiểu vẽ.
-watch(() => props.tool, () => { if (active.value) cancel() })
+watch(
+  () => props.tool,
+  () => {
+    if (active.value) cancel()
+  },
+)
 
 // Khi canvas xuất hiện, theo dõi thay đổi kích thước và hủy nét nếu cửa sổ mất focus.
 onMounted(() => {
@@ -219,9 +245,25 @@ onBeforeUnmount(() => {
       :height="HEIGHT"
       class="drawing-canvas"
       role="img"
-      :aria-label="tool === 'eraser' ? 'Kéo để tẩy nét vẽ' : tool === 'circle' ? 'Kéo từ tâm để vẽ hình tròn' : tool === 'rectangle' ? 'Kéo để vẽ hình chữ nhật' : tool === 'line' ? 'Kéo để vẽ đường thẳng' : 'Kéo để vẽ nét tự do'"
+      :aria-label="
+        tool === 'eraser'
+          ? 'Kéo để tẩy nét vẽ'
+          : tool === 'circle'
+            ? 'Kéo từ tâm để vẽ hình tròn'
+            : tool === 'rectangle'
+              ? 'Kéo để vẽ hình chữ nhật'
+              : tool === 'line'
+                ? 'Kéo để vẽ đường thẳng'
+                : 'Kéo để vẽ nét tự do'
+      "
       @pointerdown="start"
     />
-    <canvas ref="previewCanvas" :width="WIDTH" :height="HEIGHT" class="drawing-canvas-preview" aria-hidden="true" />
+    <canvas
+      ref="previewCanvas"
+      :width="WIDTH"
+      :height="HEIGHT"
+      class="drawing-canvas-preview"
+      aria-hidden="true"
+    />
   </div>
 </template>

@@ -5,6 +5,8 @@ const { test, before, after } = require("node:test");
 const { WebSocket } = require("ws");
 const { createTokenVerifier } = require("../src/auth");
 const { createApplication } = require("../src/application");
+const { AppError } = require("../src/errors");
+const { emptyDocument } = require("../src/protocol");
 
 // Khóa test chỉ tồn tại trong bộ nhớ; toàn bộ test dùng SDK thật mà không gọi dịch vụ Clerk.
 const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -75,6 +77,8 @@ test("invalid publishable key and empty origin allowlist fail before startup", (
 let application;
 let baseUrl;
 const roomReads = [];
+const stateReads = [];
+const roomId = "00000000-0000-4000-8000-000000000001";
 // Mở ứng dụng thật trên cổng local ngẫu nhiên với repository giả, không tạo kết nối PostgreSQL.
 before(async () => {
   application = createApplication({
@@ -82,6 +86,12 @@ before(async () => {
     repository: {
       // Ghi nhận ID được chuyển xuống repository để phát hiện truy cập trước khi xác thực.
       listRooms: async (userId) => { roomReads.push(userId); return []; },
+      // Chỉ phiên test được cấp quyền mới đọc trạng thái; ghi nhận ID do bộ xác thực truyền xuống.
+      state: async (userId, id) => {
+        stateReads.push({ userId, roomId: id });
+        if (userId !== "user_test" || id !== roomId) throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied.");
+        return { room: { id, title: "Test room", ownerId: userId, sequence: 0 }, sequence: 0, document: emptyDocument() };
+      },
     },
   });
   application.server.listen(0, "127.0.0.1");
@@ -177,4 +187,45 @@ test("WebSocket rejects an invalid session and closes with 4401", { timeout: 500
   });
   const [code] = await closed;
   assert.equal(code, 4401);
+});
+
+// Chỉ tải trạng thái sau auth.ok; tài liệu đến từ repository của đúng thành viên, không nhận từ client.
+test("WebSocket authenticates then loads authoritative state for a member", { timeout: 5000 }, async (context) => {
+  const socket = await connectSocket(context);
+  let reply = once(socket, "message");
+  socket.send(JSON.stringify({ v: 1, type: "auth", token: sessionToken() }));
+  assert.equal(JSON.parse((await reply)[0].toString()).type, "auth.ok");
+  const readsBefore = stateReads.length;
+  reply = once(socket, "message");
+  socket.send(JSON.stringify({ v: 1, type: "room.join", roomId }));
+  const state = JSON.parse((await reply)[0].toString());
+  assert.deepEqual(state, { v: 1, type: "room.state", room: { id: roomId, title: "Test room", ownerId: "user_test", sequence: 0 }, sequence: 0, document: emptyDocument() });
+  assert.deepEqual(stateReads.slice(readsBefore), [{ userId: "user_test", roomId }]);
+});
+
+// Biết ID phòng không đủ: phiên hợp lệ nhưng chưa là thành viên vẫn không nhận tài liệu.
+test("WebSocket denies a signed-in outsider without returning room state", { timeout: 5000 }, async (context) => {
+  const socket = await connectSocket(context);
+  let reply = once(socket, "message");
+  socket.send(JSON.stringify({ v: 1, type: "auth", token: sessionToken({ sub: "user_outside" }) }));
+  assert.equal(JSON.parse((await reply)[0].toString()).type, "auth.ok");
+  const readsBefore = stateReads.length;
+  reply = once(socket, "message");
+  socket.send(JSON.stringify({ v: 1, type: "room.join", roomId }));
+  assert.deepEqual(JSON.parse((await reply)[0].toString()), {
+    v: 1, type: "error", code: "ROOM_NOT_FOUND", message: "Room not found or access denied.",
+  });
+  assert.deepEqual(stateReads.slice(readsBefore), [{ userId: "user_outside", roomId }]);
+});
+
+// Chặn subscribe trước xác thực ngay ở giao thức WebSocket, không gọi repository.
+test("WebSocket rejects room join before authentication", { timeout: 5000 }, async (context) => {
+  const socket = await connectSocket(context);
+  const readsBefore = stateReads.length;
+  const reply = once(socket, "message");
+  const closed = once(socket, "close");
+  socket.send(JSON.stringify({ v: 1, type: "room.join", roomId }));
+  assert.equal(JSON.parse((await reply)[0].toString()).code, "AUTH_REQUIRED");
+  assert.equal((await closed)[0], 4401);
+  assert.equal(stateReads.length, readsBefore);
 });

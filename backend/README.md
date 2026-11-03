@@ -58,13 +58,23 @@ xác minh chữ ký, issuer, origin và thời gian; ứng dụng kiểm tra ID 
 ID phiên, hạn phiên và từ chối phiên đăng nhập còn `pending`. `server.js` kiểm tra
 cấu hình xác thực trước khi tạo pool PostgreSQL.
 
-28 test trong `tests/auth.test.js` dùng SDK thật với khóa RSA chỉ tồn tại trong bộ
+31 test trong `tests/auth.test.js` dùng SDK thật với khóa RSA chỉ tồn tại trong bộ
 nhớ và repository giả. Chúng kiểm tra token hợp lệ/sai, phản hồi HTTP an toàn và
-xác thực WebSocket. Không cần khóa Clerk thật, Supabase hoặc chạy migration.
+xác thực WebSocket, tải trạng thái sau xác thực và chặn subscribe chưa đăng nhập/
+chưa có quyền thành viên. Không cần khóa Clerk thật, Supabase hoặc chạy migration.
 
 11 test bổ sung trong `tests/memory-repository.test.js` và `tests/rooms.test.js`
 kiểm tra tạo/liệt kê/đọc metadata phòng, cách ly hai tài khoản, chặn giả mạo chủ
-phòng, giới hạn danh sách và chống sửa dữ liệu trả về. Tổng cộng 39 test backend.
+phòng, giới hạn danh sách và chống sửa dữ liệu trả về.
+
+8 test trong `tests/invitation.test.js` kiểm tra repository PostgreSQL thật với pool
+SQL giả và route HTTP: quyền phát/join, hash, link cũ, tham gia lại không trùng,
+không đổi chủ phòng và rollback khi lỗi ghi.
+
+3 test trong `tests/collaboration.test.js` dùng client `ws` thật và repository
+PostgreSQL với SQL giả: xác nhận sau COMMIT, phát cùng thứ tự, chống nét trùng,
+tải lại trạng thái và không xác nhận khi transaction lỗi. Tổng cộng **53 test
+backend**, không cần dịch vụ thật; độ bền trên Supabase/restart vẫn cần thử riêng.
 
 `src/memory-repository.js` cung cấp `ready()`, `createRoom()`, `listRooms()` và
 `getRoom()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
@@ -73,8 +83,12 @@ Token mời chỉ trả khi tạo; danh sách/metadata không chứa token hoặ
 
 Repository này được inject vào `createApplication()` trong test. Mỗi instance có
 dữ liệu RAM riêng và mất dữ liệu khi dừng tiến trình; `server.js` hiện vẫn dùng
-PostgreSQL. Tiếp theo sẽ nối giao diện tạo/liệt kê phòng và tham gia bằng link
-mời với API thật; không cần thêm chế độ chạy RAM riêng.
+PostgreSQL. Giao diện đã nối tạo/liệt kê/đọc thông tin phòng, phát và nhận link
+mời; người dùng đã xác nhận tài khoản thật thứ hai tham gia đúng phòng và có vai
+trò thành viên. Cách ly phòng được xác nhận bằng hai tài khoản thật và đối chiếu
+Supabase chỉ đọc: người ngoài bị từ chối, danh sách chỉ trả phòng đã tham gia,
+thành viên không trùng và chủ phòng không đổi. Các kiểm tra bổ sung còn lại theo
+[Plans.md](../Plans.md).
 
 ## Khởi tạo database
 
@@ -114,8 +128,10 @@ node --check server.js
 Kiểm tra thật ngày 2026-11-02: kết nối Supabase qua `pg` với chứng chỉ TLS hợp lệ,
 repository readiness, `/healthz` (200), `/readyz` (200), và API phòng chưa đăng nhập
 (401 `AUTH_REQUIRED`) đều đạt. Backend dừng sạch sau kiểm tra; tiến trình thử nghiệm
-không được giữ chạy. Token từ tài khoản thật, tải JWKS của Clerk, thao tác phòng
-đã xác thực và lưu/khôi phục nét vẽ vẫn cần kiểm chứng.
+không được giữ chạy. Luồng phòng HTTP bằng tài khoản thật đã được xác nhận sau đó;
+hai tài khoản thật cũng đã xác nhận WebSocket nhận trạng thái, F5 và giữ kết nối
+hơn một phút. Canvas đã được nối để gửi/nhận nét hoàn thành; vẽ/tẩy/F5 với tài
+khoản thật, lần tải JWKS riêng và khôi phục sau restart tiếp tục theo dõi trong kế hoạch.
 
 Audit ngày 2026-11-02: dependency production không có cảnh báo; audit đầy đủ còn
 2 mục moderate trong chuỗi development `nodemon → minimatch` đã tồn tại trước lần

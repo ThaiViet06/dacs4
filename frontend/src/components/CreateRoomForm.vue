@@ -6,6 +6,7 @@ import { ApiError } from '../services/api'
 import { createRoom } from '../services/rooms'
 
 const { isLoaded, isSignedIn, user } = useUser()
+const emit = defineEmits<{ created: [room: Room] }>()
 const title = ref('')
 const creating = ref(false)
 const titleError = ref('')
@@ -73,6 +74,8 @@ async function submitRoom() {
     // Không giữ token mời trong giao diện hoặc bộ nhớ trình duyệt khi chưa triển khai luồng lời mời.
     createdRoom.value = result.room
     title.value = ''
+    // Báo trang Bộ sưu tập tải lại danh sách sau khi phòng đã được lưu thành công.
+    emit('created', result.room)
   } catch (error) {
     if (version === requestVersion) requestError.value = creationErrorMessage(error)
   } finally {
@@ -126,10 +129,7 @@ async function submitRoom() {
 
     <div v-if="createdRoom" class="create-room-success" role="status">
       <strong>Đã tạo phòng “{{ createdRoom.title }}”.</strong>
-      <p>
-        Thông tin phòng đã được lưu. Danh sách phòng và cách mở phòng sẽ được bổ sung ở bước tiếp
-        theo.
-      </p>
+      <p>Thông tin phòng đã được lưu. Bạn có thể xem phòng trong danh sách bên dưới.</p>
     </div>
   </section>
 </template>
