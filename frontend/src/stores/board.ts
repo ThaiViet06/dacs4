@@ -26,6 +26,7 @@ export const useBoardStore = defineStore('board', () => {
   const room = ref<Room | null>(null)
   const status = ref<'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'>('idle')
   const error = ref('')
+  const revokedRoomId = ref('')
   const sequence = ref(0)
   const members = ref<{ clientId: string; userId: string }[]>([])
   const pending = ref<Record<string, Operation>>({})
@@ -118,6 +119,7 @@ export const useBoardStore = defineStore('board', () => {
     disconnect()
     sessions.clear()
     clearActive()
+    revokedRoomId.value = ''
   }
   // Header gọi cả khi người dùng ở ngoài editor, tránh phục hồi dữ liệu của tài khoản trước.
   function setAccount(userId: string) {
@@ -131,6 +133,7 @@ export const useBoardStore = defineStore('board', () => {
     disconnect()
     clearActive()
     target = roomId
+    revokedRoomId.value = ''
     const saved = sessions.get(roomId)
     if (saved) {
       room.value = saved.room
@@ -331,6 +334,14 @@ export const useBoardStore = defineStore('board', () => {
         // Khi mất kết nối, dọn trạng thái tạm và thử nối lại theo thời gian chờ tăng dần.
         connection.onclose = (event) => {
           if (current !== generation || socket !== connection) return
+          // Thu quyền là kết thúc truy cập, không phải mất mạng: xóa cache và báo trang dự án để quay về Studio.
+          if (event.code === 4403) {
+            forgetRoom(roomId)
+            status.value = 'error'
+            error.value = 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.'
+            revokedRoomId.value = roomId
+            return
+          }
           if (event.code === 4401) {
             reset()
             status.value = 'error'
@@ -371,6 +382,7 @@ export const useBoardStore = defineStore('board', () => {
     room,
     status,
     error,
+    revokedRoomId,
     sequence,
     members,
     operations,

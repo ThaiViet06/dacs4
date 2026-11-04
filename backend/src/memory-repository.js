@@ -1,10 +1,14 @@
 const { randomUUID, randomBytes, createHash } = require("node:crypto");
 const { AppError } = require("./errors");
 const { emptyDocument, checkSize, titleSchema } = require("./protocol");
+const { sharingChange } = require("./sharing");
 
 // Repository tạm cho development/test; mỗi instance giữ dữ liệu riêng và mất dữ liệu khi khởi động lại.
 class MemoryRepository {
   #rooms = new Map();
+
+  // Inject cùng bộ sinh token như PostgreSQL, không tự sinh khóa bí mật trong repository tạm.
+  constructor({ shareToken } = {}) { this.shareToken = shareToken; }
 
   // Cho phép health check hoạt động mà không mở kết nối PostgreSQL.
   async ready() {}
@@ -16,7 +20,7 @@ class MemoryRepository {
     const inviteToken = randomBytes(32).toString("base64url");
     const room = {
       id: randomUUID(), title: roomTitle, ownerId: userId,
-      sharingEnabled: false,
+      sharingEnabled: false, sharingVersion: 0,
       sequence: 0, checkpoint: null, updatedAt: new Date(Date.now()).toISOString(),
       inviteHash: createHash("sha256").update(inviteToken).digest("hex"),
       initialDocument: structuredClone(document), members: new Set([userId]),
@@ -41,6 +45,49 @@ class MemoryRepository {
       throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied. Join with an invitation first.");
     }
     return this.#metadata(room);
+  }
+
+  // Chủ đọc trạng thái và lấy lại token HMAC như PostgreSQL, không thay đổi dữ liệu trong bộ nhớ.
+  async getSharing(userId, roomId) {
+    const room = await this.getRoom(userId, roomId);
+    if (room.ownerId !== userId) throw new AppError(403, "OWNER_REQUIRED", "Only the room owner can do that.");
+    const stored = this.#rooms.get(roomId);
+    if (stored.sharingEnabled && stored.sharingVersion > 0) {
+      const { inviteToken } = sharingChange({ id: stored.id, enabled: true,
+        version: stored.sharingVersion, inviteHash: stored.inviteHash }, true, this.shareToken);
+      return { enabled: true, inviteToken };
+    }
+    return { enabled: room.sharingEnabled };
+  }
+
+  // Mô phỏng đổi chế độ cho test/development, dùng chung quy tắc HMAC và giữ nguyên nét/sequence.
+  async setSharing(userId, roomId, enabled) {
+    const metadata = await this.getRoom(userId, roomId);
+    if (metadata.ownerId !== userId) throw new AppError(403, "OWNER_REQUIRED", "Only the room owner can do that.");
+    const room = this.#rooms.get(roomId);
+    const change = sharingChange({ id: room.id, enabled: room.sharingEnabled,
+      version: room.sharingVersion, inviteHash: room.inviteHash }, enabled, this.shareToken);
+    if (room.sharingEnabled !== enabled) {
+      room.sharingEnabled = enabled;
+      room.sharingVersion = change.version;
+      room.inviteHash = change.inviteHash;
+      room.updatedAt = new Date(Date.now()).toISOString();
+      if (!enabled) room.members = new Set([room.ownerId]);
+    }
+    return { room: this.#metadata(room), enabled, ...(change.inviteToken ? { inviteToken: change.inviteToken } : {}) };
+  }
+
+  // Cùng quy tắc nâng link/idempotency như PostgreSQL; chỉ thay version/hash, giữ nguyên dữ liệu khác.
+  async upgradeInvitation(userId, roomId) {
+    const metadata = await this.getRoom(userId, roomId);
+    if (metadata.ownerId !== userId) throw new AppError(403, "OWNER_REQUIRED", "Only the room owner can do that.");
+    const room = this.#rooms.get(roomId);
+    if (!room.sharingEnabled) throw new AppError(409, "SHARING_DISABLED", "Enable sharing before updating the invitation.");
+    const change = sharingChange({ id: room.id, enabled: true, version: room.sharingVersion,
+      inviteHash: room.inviteHash }, true, this.shareToken, { upgradeLegacy: true });
+    room.sharingVersion = change.version;
+    room.inviteHash = change.inviteHash;
+    return { room: this.#metadata(room), enabled: true, inviteToken: change.inviteToken };
   }
 
   // Mô phỏng quyền đổi tên của PostgreSQL cho development/test, chỉ cập nhật tên và thời gian.

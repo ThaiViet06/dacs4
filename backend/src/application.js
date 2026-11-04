@@ -4,7 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const { WebSocketServer, WebSocket } = require("ws");
 const { AppError, publicError } = require("./errors");
-const { parse, messageSchema, createSchema, joinSchema, uuidSchema, saveSchema } = require("./protocol");
+const { parse, messageSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema } = require("./protocol");
 const { RoomQueue } = require("./queue");
 
 function createApplication({ repository, verifyToken, origins, heartbeatMs = 30000 }) {
@@ -61,6 +61,19 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
     res.json({ room: await repository.joinRoom(req.userId, token) });
   }));
   app.get("/api/rooms/:id", route(async (req, res) => res.json({ room: await repository.getRoom(req.userId, id(req)) })));
+  // Chỉ đọc trạng thái chia sẻ cho chủ đã xác thực; không tạo link hoặc thay đổi quyền thành viên.
+  app.get("/api/rooms/:id/sharing", route(async (req, res) => res.json(await repository.getSharing(req.userId, id(req)))));
+  // Xếp cùng hàng đợi với nét/join; chỉ ngắt cộng tác sau khi transaction thu quyền đã commit.
+  app.patch("/api/rooms/:id/sharing", route(async (req, res) => {
+    const roomId = id(req);
+    const { enabled } = parse(sharingSchema, req.body);
+    const result = await queue.run(roomId, async () => {
+      const saved = await repository.setSharing(req.userId, roomId, enabled);
+      if (!enabled) revokeCollaborators(roomId, saved.room.ownerId);
+      return saved;
+    });
+    res.json(result);
+  }));
   // Đổi tên theo danh tính Clerk; dùng cùng hàng đợi với nét vẽ để giữ thứ tự cập nhật của dự án.
   app.patch("/api/rooms/:id", route(async (req, res) => {
     const roomId = id(req);
@@ -69,6 +82,12 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
     res.json({ room });
   }));
   app.post("/api/rooms/:id/invitation", route(async (req, res) => res.json(await repository.invitation(req.userId, id(req)))));
+  // Chủ xác nhận đổi link theo cùng hàng đợi với nét/chế độ; nâng link không ngắt socket hoặc thu quyền.
+  app.post("/api/rooms/:id/sharing/upgrade", route(async (req, res) => {
+    const roomId = id(req);
+    parse(upgradeInvitationSchema, req.body);
+    res.json(await queue.run(roomId, () => repository.upgradeInvitation(req.userId, roomId)));
+  }));
   for (const [path, checkpoint] of [["checkpoint", true], ["copies", false]]) {
     app[checkpoint ? "put" : "post"](`/api/rooms/:id/${path}`, route(async (req, res) => {
       const roomId = id(req);
@@ -108,6 +127,15 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
     socket.roomId = undefined;
     presence(roomId);
   }
+  // Thu socket khỏi phòng ngay, bỏ frame đang chờ và báo 4403 cho các cộng tác viên; giữ kết nối của chủ.
+  function revokeCollaborators(roomId, ownerId) {
+    for (const socket of [...(rooms.get(roomId) || [])]) {
+      if (socket.identity.userId === ownerId) continue;
+      socket.accessRevoked = true;
+      leave(socket);
+      socket.close(4403, "Project sharing was disabled");
+    }
+  }
   server.on("upgrade", (req, socket, head) => {
     if (stopping || req.url !== "/ws" || !origins.includes(req.headers.origin)) {
       socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
@@ -126,8 +154,9 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
     socket.on("pong", () => { socket.alive = true; });
     socket.on("error", () => {});
     socket.on("close", () => { clearTimeout(authTimer); clearTimeout(expiration); leave(socket); });
+    // Socket bị thu hồi không được xử lý tiếp các frame đã gửi nhưng còn nằm trong hàng đợi.
     async function handle(raw, binary) {
-      if (socket.readyState !== WebSocket.OPEN) return;
+      if (socket.accessRevoked || socket.readyState !== WebSocket.OPEN) return;
       let message;
       try {
         if (binary) throw new AppError(400, "INVALID_MESSAGE", "Only JSON text messages are supported.");
@@ -167,12 +196,21 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
         if (!socket.roomId) throw new AppError(409, "JOIN_REQUIRED", "Join a room first.");
         if (message.type === "operation.preview") {
           if (++rate.previews > 20) return;
-          broadcast(socket.roomId, message.type, { clientId: socket.clientId, operation: message.operation }, socket);
+          const roomId = socket.roomId;
+          await queue.run(roomId, () => {
+            if (!socket.accessRevoked && socket.roomId === roomId)
+              broadcast(roomId, message.type, { clientId: socket.clientId, operation: message.operation }, socket);
+          });
         } else if (message.type === "preview.cancel") {
-          broadcast(socket.roomId, message.type, { clientId: socket.clientId, operationId: message.operationId }, socket);
+          const roomId = socket.roomId;
+          await queue.run(roomId, () => {
+            if (!socket.accessRevoked && socket.roomId === roomId)
+              broadcast(roomId, message.type, { clientId: socket.clientId, operationId: message.operationId }, socket);
+          });
         } else if (message.type === "operation.commit") {
           const roomId = socket.roomId;
           await queue.run(roomId, async () => {
+            if (socket.accessRevoked) return;
             const committed = await repository.commit(socket.identity.userId, roomId, message.operation);
             if (committed.duplicate) send(socket, "operation.committed", committed);
             else broadcast(roomId, "operation.committed", committed);

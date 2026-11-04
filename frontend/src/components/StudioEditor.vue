@@ -3,12 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import DrawingCanvas from './DrawingCanvas.vue'
 import RoomInvitation from './RoomInvitation.vue'
+import RenameProjectForm from './RenameProjectForm.vue'
 import type { Operation, Room, Tool } from '../drawing/model'
 import { useBoardStore } from '../stores/board'
 import { useDraftStore } from '../stores/draft'
 import { useDrawingStore } from '../stores/drawing'
 
 const props = defineProps<{ room?: Room; isOwner?: boolean }>()
+const emit = defineEmits<{ renamed: [room: Room]; 'sharing-changed': [room: Room] }>()
 // Cùng một editor: có metadata dự án thì dùng dữ liệu server, còn bản nháp dùng lịch sử local.
 const isProject = computed(() => Boolean(props.room))
 const toolNames: Record<Tool, string> = {
@@ -73,6 +75,12 @@ const historyHint = computed(() => {
 const actionFeedback = ref('')
 const resetDialog = ref<HTMLDialogElement | null>(null)
 const shareDialog = ref<HTMLDialogElement | null>(null)
+const sharingOpen = ref(false)
+const sharingBusy = ref(false)
+// Chỉ thay quyền sau khi các nét của mình đã được server xác nhận; lỗi lưu cũng cần được xử lý trước.
+const sharingBlocked = computed(
+  () => !canDraw.value || board.pendingCount > 0 || board.rejected.length > 0,
+)
 let feedbackTimer: ReturnType<typeof setTimeout> | undefined
 let feedbackGeneration = 0
 
@@ -156,7 +164,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleToolShortcut)
   closeResetDialog()
-  closeSharing()
+  discardSharing()
   feedbackGeneration++
   clearTimeout(feedbackTimer)
 })
@@ -192,14 +200,24 @@ function confirmStartOver() {
   showActionFeedback('Đã tạo trang giấy mới.')
 }
 
-// Mở hộp chia sẻ cho chủ dự án đang ở chế độ chung; backend vẫn kiểm tra quyền thực tế.
+// Chủ mở được hộp ở cả chế độ riêng/chung; component con chỉ đọc trạng thái khi hộp được mở.
 function openSharing() {
-  if (props.isOwner && props.room?.sharingEnabled) shareDialog.value?.showModal()
+  if (!props.isOwner || !props.room || !canDraw.value) return
+  sharingOpen.value = true
+  shareDialog.value?.showModal()
 }
 
 // Đóng dialog khi bấm nút hoặc rời editor, trả việc điều khiển bàn phím về Canvas.
 function closeSharing() {
+  if (sharingBusy.value) return
   if (shareDialog.value?.open) shareDialog.value.close()
+  sharingOpen.value = false
+}
+
+// Khi rời editor luôn đóng dialog; phản hồi request của component con sẽ bị bỏ sau unmount.
+function discardSharing() {
+  sharingBusy.value = false
+  closeSharing()
 }
 
 // Thử nối lại đúng dự án với token mới, giữ nét đang chờ và dữ liệu server.
@@ -250,12 +268,28 @@ function commitStroke(operation: Operation) {
       ref="shareDialog"
       class="studio-reset-dialog studio-sharing-dialog"
       aria-labelledby="studio-sharing-title"
+      :closedby="sharingBusy ? 'none' : 'closerequest'"
+      @cancel.prevent="closeSharing"
     >
       <div class="studio-reset-dialog-content">
         <h2 id="studio-sharing-title">Chia sẻ bản vẽ</h2>
-        <RoomInvitation v-if="room?.sharingEnabled && isOwner" :key="room.id" :room-id="room.id" />
+        <RoomInvitation
+          v-if="room && isOwner && sharingOpen"
+          :key="room.id"
+          :room="room"
+          :disabled="sharingBlocked"
+          @busy="sharingBusy = $event"
+          @changed="emit('sharing-changed', $event)"
+        />
         <div class="studio-reset-dialog-actions">
-          <button class="button button-outline" type="button" @click="closeSharing">Đóng</button>
+          <button
+            class="button button-outline"
+            type="button"
+            :disabled="sharingBusy"
+            @click="closeSharing"
+          >
+            Đóng
+          </button>
         </div>
       </div>
     </dialog>
@@ -288,8 +322,14 @@ function commitStroke(operation: Operation) {
           }}</span
         >
         <template v-if="isProject">
+          <RenameProjectForm
+            v-if="room && isOwner"
+            :room="room"
+            :disabled="!canDraw"
+            @renamed="emit('renamed', $event)"
+          />
           <button
-            v-if="isOwner && room?.sharingEnabled"
+            v-if="isOwner"
             class="button button-primary"
             type="button"
             :disabled="!canDraw"

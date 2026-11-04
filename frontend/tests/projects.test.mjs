@@ -169,3 +169,59 @@ test('a newly created card survives an older list response without duplicates', 
   await refresh
   assert.equal(projects.rooms.length, 2)
 })
+
+// Phản hồi danh sách bắt đầu trước PATCH không được trả card về tên cũ; không đổi bộ lọc/sequence.
+test('renamed cards retain current metadata and reject stale lists or another account', async (context) => {
+  const { projects, requests } = setup(context)
+  projects.addCreatedRoom({ ...room(), sequence: 12 })
+  projects.activeGroup = 'shared'
+  const oldRequest = projects.loadRooms()
+  const renamed = { ...room(), title: 'Renamed', updatedAt: '2026-11-04T03:00:00Z', sequence: 10 }
+  projects.updateRenamedRoom(renamed)
+  requests[0].resolve({ rooms: [room()] })
+  await oldRequest
+  assert.equal(projects.loading, false)
+  assert.equal(projects.rooms[0].title, 'Renamed')
+  assert.equal(projects.rooms[0].sequence, 12)
+  assert.equal(projects.rooms[0].updatedAt, renamed.updatedAt)
+  assert.equal(projects.activeGroup, 'shared')
+  projects.updateRenamedRoom({ ...renamed, ownerId: 'user-b', title: 'Wrong account' })
+  assert.equal(projects.rooms[0].title, 'Renamed')
+  projects.setAccount('user-b')
+  projects.updateRenamedRoom(renamed)
+  assert.deepEqual(projects.rooms, [])
+  projects.updateRenamedRoom({ ...room('uncached', 'user-b'), title: 'Direct-link project' })
+  assert.deepEqual(projects.rooms, [])
+  assert.equal(projects.hasLoaded, false)
+})
+
+// Chuyển chế độ đưa card sang đúng mục, giữ metadata mới hơn và không để GET cũ trả về nhóm trước đó.
+test('sharing updates move cards between groups without overwriting newer stroke metadata', async (context) => {
+  const { projects, requests } = setup(context)
+  projects.addCreatedRoom({ ...room(), sequence: 12 })
+  const loading = projects.loadRooms()
+  projects.updateSharedRoom({ ...room(), sharingEnabled: true, sequence: 10 })
+  requests[0].resolve({ rooms: [room()] })
+  await loading
+  assert.equal(projects.rooms[0].sharingEnabled, true)
+  assert.equal(projects.rooms[0].sequence, 12)
+  assert.equal(projects.activeGroup, 'shared')
+  projects.updateSharedRoom({ ...room(), ownerId: 'user-b', sharingEnabled: false })
+  assert.equal(projects.rooms[0].sharingEnabled, true)
+  projects.updateSharedRoom({ ...room(), sharingEnabled: false })
+  assert.equal(projects.activeGroup, 'personal')
+})
+
+// Card đã thu hồi không xuất hiện lại từ phản hồi cũ; thông báo cũng không lọt sang tài khoản sau.
+test('revoked project cards stay removed and notices clear on account changes', async (context) => {
+  const { projects, requests } = setup(context)
+  projects.addCreatedRoom(room())
+  const loading = projects.loadRooms()
+  projects.removeRoom('room-a', 'Access revoked')
+  requests[0].resolve({ rooms: [room()] })
+  await loading
+  assert.deepEqual(projects.rooms, [])
+  assert.equal(projects.notice, 'Access revoked')
+  projects.setAccount('user-b')
+  assert.equal(projects.notice, '')
+})

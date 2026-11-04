@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { SignInButton, useUser } from '@clerk/vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import StudioEditor from '../components/StudioEditor.vue'
 import type { Room } from '../drawing/model'
 import { ApiError } from '../services/api'
 import { clerkPublishableKey } from '../services/clerk'
 import { getRoom } from '../services/rooms'
 import { useBoardStore } from '../stores/board'
+import { useProjectsStore } from '../stores/projects'
 
 const route = useRoute()
+const router = useRouter()
 const board = useBoardStore()
+const projects = useProjectsStore()
 // Chỉ gọi hook khi main.ts đã đăng ký Clerk; bản nháp local vẫn dùng được khi thiếu cấu hình.
 const session = clerkPublishableKey ? useUser() : null
 const isLoaded = session?.isLoaded ?? ref(true)
@@ -20,6 +23,39 @@ const room = ref<Room | null>(null)
 const loading = ref(false)
 const error = ref('')
 let requestVersion = 0
+
+// Chỉ cập nhật tên/thời gian của đúng dự án và chủ hiện tại, không ghi đè sequence/nét đang đồng bộ.
+function roomRenamed(renamed: Room) {
+  if (!isSignedIn.value || user.value?.id !== renamed.ownerId || room.value?.id !== renamed.id)
+    return
+  const metadata = { title: renamed.title, updatedAt: renamed.updatedAt }
+  room.value = { ...room.value, ...metadata }
+  if (board.room?.id === renamed.id) board.room = { ...board.room, ...metadata }
+  projects.updateRenamedRoom(renamed)
+}
+
+// Cập nhật riêng chế độ/thời gian của đúng chủ và dự án; giữ tài liệu, sequence và tên đang hiển thị.
+function sharingChanged(updated: Room) {
+  if (!isSignedIn.value || user.value?.id !== updated.ownerId || room.value?.id !== updated.id)
+    return
+  const metadata = { sharingEnabled: updated.sharingEnabled, updatedAt: updated.updatedAt }
+  room.value = { ...room.value, ...metadata }
+  if (board.room?.id === updated.id) board.room = { ...board.room, ...metadata }
+  if (!updated.sharingEnabled) board.rememberInvitation(updated.id, '')
+  projects.updateSharedRoom(updated)
+}
+
+// Server thu quyền 4403: ẩn Canvas, loại card và đưa về Studio với lý do, không tự thử lại socket.
+watch(
+  () => board.revokedRoomId,
+  (roomId) => {
+    if (!roomId || roomId !== route.params.id || !isSignedIn.value) return
+    room.value = null
+    projects.removeRoom(roomId, 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.')
+    void router.replace({ name: 'studio' })
+  },
+  { flush: 'sync' },
+)
 
 // Hiện cache ở chế độ khóa vẽ, rồi kiểm tra quyền và đồng bộ; phản hồi phiên cũ luôn bị bỏ qua.
 async function loadRoom() {
@@ -87,6 +123,8 @@ onBeforeUnmount(() => {
     :key="room.id"
     :room="room"
     :is-owner="room.ownerId === user?.id"
+    @renamed="roomRenamed"
+    @sharing-changed="sharingChanged"
   />
   <section v-else class="studio-page page-container">
     <div class="breadcrumb">

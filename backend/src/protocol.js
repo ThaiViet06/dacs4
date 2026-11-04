@@ -44,6 +44,18 @@ function titleSchema(value) {
 }
 // Dữ liệu tạo hoặc đổi tên dự án chỉ được có một trường title hợp lệ.
 function createSchema(value) { object(value, ["title"]); return { title: titleSchema(value.title) }; }
+// Chỉ nhận boolean bật/tắt; client không được tự chỉ định hash, version hoặc thành viên.
+function sharingSchema(value) {
+  object(value, ["enabled"]);
+  ensure(typeof value.enabled === "boolean");
+  return value;
+}
+// Thay link cũ cần xác nhận rõ ràng, không chấp nhận trường owner/hash/version từ client.
+function upgradeInvitationSchema(value) {
+  object(value, ["confirmed"]);
+  ensure(value.confirmed === true);
+  return value;
+}
 // Kiểm tra token trong yêu cầu tham gia phòng.
 function joinSchema(value) {
   object(value, ["token"]);
@@ -82,4 +94,4 @@ function parse(schema, value) {
 function checkSize(document) {
   if (Buffer.byteLength(JSON.stringify(document)) > MAX_DOCUMENT_BYTES) throw new AppError(413, "DOCUMENT_FULL", "This board reached its 5 MiB limit. Start a new room.");
 }
-module.exports = { WIDTH, HEIGHT, MAX_DOCUMENT_BYTES, operationSchema, messageSchema, titleSchema, createSchema, joinSchema, uuidSchema, saveSchema, emptyDocument, parse, checkSize };
+module.exports = { WIDTH, HEIGHT, MAX_DOCUMENT_BYTES, operationSchema, messageSchema, titleSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema, emptyDocument, parse, checkSize };

@@ -11,6 +11,7 @@ export const useProjectsStore = defineStore('projects', () => {
   const hasLoaded = ref(false)
   const error = ref('')
   const activeGroup = ref<'personal' | 'shared'>('personal')
+  const notice = ref('')
   let accountId = ''
   let requestVersion = 0
 
@@ -24,6 +25,7 @@ export const useProjectsStore = defineStore('projects', () => {
     hasLoaded.value = false
     error.value = ''
     activeGroup.value = 'personal'
+    notice.value = ''
   }
 
   // Tải lần đầu hoặc cập nhật ngầm, giữ card cũ trong lúc chờ và gộp các yêu cầu đang chạy.
@@ -64,5 +66,49 @@ export const useProjectsStore = defineStore('projects', () => {
     activeGroup.value = 'personal'
   }
 
-  return { rooms, loading, hasLoaded, error, activeGroup, setAccount, loadRooms, addCreatedRoom }
+  // Cập nhật tên trong card đã có, giữ bộ lọc/nét/sequence và bỏ GET cũ có thể trả lại tên trước đó.
+  function updateRenamedRoom(room: Room) {
+    if (!accountId || room.ownerId !== accountId) return
+    requestVersion++
+    loading.value = false
+    rooms.value = rooms.value.map((item) =>
+      item.id === room.id ? { ...item, title: room.title, updatedAt: room.updatedAt } : item,
+    )
+  }
+
+  // Chuyển card sang đúng nhóm sau khi server xác nhận, không ghi đè sequence mới hơn hoặc dữ liệu tài khoản khác.
+  function updateSharedRoom(room: Room) {
+    if (!accountId || room.ownerId !== accountId) return
+    requestVersion++
+    loading.value = false
+    rooms.value = rooms.value.map((item) =>
+      item.id === room.id
+        ? { ...item, sharingEnabled: room.sharingEnabled, updatedAt: room.updatedAt }
+        : item,
+    )
+    activeGroup.value = room.sharingEnabled ? 'shared' : 'personal'
+  }
+
+  // Thu quyền loại card ngay, bỏ GET đang chờ và giữ lý do để trang Studio thông báo sau điều hướng.
+  function removeRoom(roomId: string, message: string) {
+    requestVersion++
+    loading.value = false
+    rooms.value = rooms.value.filter((item) => item.id !== roomId)
+    notice.value = message
+  }
+
+  return {
+    rooms,
+    loading,
+    hasLoaded,
+    error,
+    activeGroup,
+    notice,
+    setAccount,
+    loadRooms,
+    addCreatedRoom,
+    updateRenamedRoom,
+    updateSharedRoom,
+    removeRoom,
+  }
 })

@@ -21,19 +21,23 @@ let requestVersion = 0
 const token = computed(() => (typeof route.params.token === 'string' ? route.params.token : ''))
 const validToken = computed(() => /^[A-Za-z0-9_-]{43}$/.test(token.value))
 
-// Đổi tài khoản hoặc link phải bỏ kết quả cũ; chỉ tham gia sau khi người dùng bấm nút.
-function resetAttempt() {
+// Khi phiên/link đổi, bỏ phản hồi cũ và tự tham gia nếu Clerk đã sẵn sàng với một tài khoản hợp lệ.
+function joinWhenReady() {
   requestVersion++
   joining.value = false
   error.value = ''
+  void acceptInvitation()
 }
 
-watch([isLoaded, isSignedIn, () => user.value?.id, token], resetAttempt, { flush: 'sync' })
+watch([isLoaded, isSignedIn, () => user.value?.id, token], joinWhenReady, {
+  immediate: true,
+  flush: 'sync',
+})
 
 // Không điều hướng từ phản hồi cũ nếu người dùng đã rời trang lời mời.
 onBeforeUnmount(() => requestVersion++)
 
-// Backend xác nhận đã lưu thành viên rồi mới mở phòng; gửi lại cùng lời mời không tạo thành viên trùng.
+// Tự kiểm tra lời mời hoặc thử lại sau lỗi; chặn gửi trùng và chỉ mở Canvas sau khi backend xác nhận thành viên.
 async function acceptInvitation() {
   if (!isLoaded.value || !isSignedIn.value || !user.value || !validToken.value || joining.value)
     return
@@ -48,7 +52,8 @@ async function acceptInvitation() {
   } catch (cause) {
     if (version !== requestVersion) return
     if (cause instanceof ApiError && (cause.status === 400 || cause.status === 404)) {
-      error.value = 'Link mời không hợp lệ hoặc đã được thay. Hãy xin link mới từ chủ phòng.'
+      error.value =
+        'Link không hợp lệ, đã được thay hoặc dự án đã tắt chia sẻ. Hãy xin link mới từ chủ dự án.'
     } else if (!(cause instanceof ApiError) || cause.status === 401) {
       error.value = 'Không thể xác thực tài khoản. Vui lòng đăng nhập lại.'
     } else if (cause.status === 429) {
@@ -69,45 +74,38 @@ async function acceptInvitation() {
     </div>
     <div class="placeholder-card invite-card" :aria-busy="joining">
       <span class="placeholder-illustration" aria-hidden="true">✉</span>
-      <p class="eyebrow">LỜI MỜI VÀO PHÒNG</p>
-      <h1>Vào phòng cùng bạn bè.</h1>
+      <p class="eyebrow">LỜI MỜI VẼ CHUNG</p>
+      <h1>Mở bản vẽ được chia sẻ.</h1>
       <p v-if="!validToken" class="invite-error" role="alert">
         Đường dẫn lời mời không hợp lệ. Hãy xin lại link đầy đủ từ chủ phòng.
       </p>
       <p v-else-if="!clerkPublishableKey" role="status">
-        Đăng nhập chưa được cấu hình. Chưa thể tham gia phòng lúc này.
+        Đăng nhập chưa được cấu hình. Chưa thể mở dự án lúc này.
       </p>
       <p v-else-if="!isLoaded" role="status">Đang kiểm tra tài khoản…</p>
       <div v-else-if="!isSignedIn">
-        <p>Đăng nhập rồi bấm Tham gia phòng để sử dụng lời mời này.</p>
+        <p>Đăng nhập để ứng dụng kiểm tra lời mời và tự mở bản vẽ.</p>
         <SignInButton mode="modal"
           ><button class="button button-primary" type="button">
-            Đăng nhập để tham gia
+            Đăng nhập để mở bản vẽ
           </button></SignInButton
         >
       </div>
-      <div v-else>
-        <p>
-          Bấm Tham gia phòng để xác nhận lời mời. Thông tin phòng sẽ hiện sau khi bạn có quyền truy
-          cập.
-        </p>
-        <p v-if="error" class="invite-error" role="alert">{{ error }}</p>
-        <button
-          class="button button-primary"
-          type="button"
-          :disabled="joining"
-          @click="acceptInvitation"
-        >
-          {{ joining ? 'Đang tham gia…' : 'Tham gia phòng' }}
+      <p v-else-if="joining" role="status">Đang xác nhận lời mời và mở bản vẽ…</p>
+      <div v-else-if="error">
+        <p class="invite-error" role="alert">{{ error }}</p>
+        <button class="button button-primary" type="button" @click="acceptInvitation">
+          Thử lại
         </button>
       </div>
+      <p v-else role="status">Đang chờ phiên đăng nhập để mở bản vẽ…</p>
       <RouterLink class="text-link invite-back" to="/studio">Về Studio</RouterLink>
     </div>
   </section>
 </template>
 
 <style scoped>
-/* Trang lời mời chỉ có một thao tác chính; không hiển thị token hoặc thông tin phòng trước khi tham gia. */
+/* Trang lời mời tự mở Canvas sau xác nhận; chỉ hiện đăng nhập hoặc thử lại khi cần người dùng xử lý. */
 .invite-card {
   max-width: 760px;
   margin-inline: auto;

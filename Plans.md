@@ -2,7 +2,7 @@
 
 Cập nhật: **04/11/2026**. Demo cho **2–10 người**, làm local trước Docker/deploy và **mỗi lần một bước nhỏ**. `[x]` là phần đã kiểm chứng trong phạm vi ghi rõ; `[ ]` là phần chưa hoàn thành.
 
-**Hiện trạng:** Backend gần nhất 66 test đạt; frontend 50 test/build/type-check/lint đạt. Studio có cache danh sách/editor và bản nháp riêng. Người dùng đã xác nhận tạo/vẽ/F5, giữ bản nháp/redo khi qua dự án, và mở lại dự án vẫn đủ nét/vẽ tiếp được. Mất ACK, link phiên và quyền đã kiểm tra bằng dịch vụ giả. UI đổi tên, API bật/tắt chia sẻ và undo/redo dự án tự lưu còn lại.
+**Hiện trạng:** Frontend 76 test/build/type-check/lint đạt; backend gần nhất 94 test. Tự tham gia qua link đã code/test/Chrome giả, chờ Clerk/tài khoản thật. Người dùng nghiệm thu bật/tắt chia sẻ, cùng vẽ/thu quyền và cập nhật link cũ; F5 giữ link/nét, thành viên vẽ tiếp sau đổi link. Tạo/vẽ/F5, nháp/redo và đổi tên đã xác nhận; undo/redo dự án còn lại.
 
 ## 1. Luồng sản phẩm đã chốt
 
@@ -51,13 +51,15 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 **Nền tảng:** Clerk, tạo/liệt kê/đọc phòng, lời mời và cách ly tài khoản đã kiểm chứng. **Bổ sung theo thứ tự:**
 
 - [x] Migration `002_project_sharing.sql` đã áp dụng/chạy lại trên Supabase; thêm `sharing_enabled`, `sharing_version`. Mặc định mới là Cá nhân/version 0; 2 phòng cũ vẫn chung, 4 thành viên và 44 nét giữ nguyên nội dung, link và ID; checksum 001 không đổi.
-- [x] API tạo/liệt kê/đọc có metadata `sharingEnabled`; tạo chỉ trả `{ room }`. Test tự động đạt cho quyền riêng tư/token mời. Người dùng đã xác nhận tạo/mở dự án Cá nhân bằng tài khoản thật; kiểm tra quyền bằng hai tài khoản trên UI mới còn chờ.
+- [x] API tạo/liệt kê/đọc có metadata `sharingEnabled`; tạo chỉ trả `{ room }`. Test quyền riêng tư/token mời đạt; người dùng xác nhận tạo/mở, tham gia và thu quyền trên UI mới bằng hai tài khoản thật.
 - [x] `PATCH /api/rooms/:id` cho chủ đổi tên, trim/kiểm tra 1–100 ký tự, chỉ nhận `title` và trả metadata sau COMMIT. Test HTTP/CORS và SQL giả đạt cho quyền, đọc lại tên, giữ nguyên nét/chế độ/sequence và rollback; UI đổi tên thuộc Pha 5.
-- [ ] Thêm `GET/PATCH /api/rooms/:id/sharing`; PATCH nhận `{ enabled }`, bật lại cùng trạng thái không tự đổi link.
-- [ ] Tạo token ổn định bằng HMAC-SHA256 của ID + sharing_version với `SHARE_LINK_SECRET` riêng, giữ khóa qua restart/deploy; database lưu hash.
-- [ ] Link cũ tiếp tục dùng; chủ chủ động bấm “Cập nhật link” để chuyển sang cơ chế mới, được báo link trước sẽ hết hiệu lực.
-- [ ] Đổi chế độ qua cùng hàng đợi/transaction với nét vẽ; về Cá nhân xóa quyền thành viên khác, vô hiệu hóa link và đóng socket cộng tác mã 4403.
-- [ ] Dự án riêng tư chỉ chủ truy cập; tham gia bằng token chỉ được phép khi đang chia sẻ. Thành viên không đổi tên/chế độ hoặc lấy link quản lý.
+- [x] `GET /api/rooms/:id/sharing` trả `{ enabled, inviteToken? }` cho chủ, không xoay link hoặc lộ hash/version. Người dùng xác nhận copy/F5 giữ đúng link HMAC; test HTTP/repository đạt cho quyền và hai chế độ.
+- [x] `PATCH /api/rooms/:id/sharing` nhận đúng `{ enabled }`, trả kết quả sau COMMIT; gửi lặp giữ link/version/thời gian. 11 test đạt cho quyền/body, link, rollback và thứ tự nét. Người dùng xác nhận bật/tắt qua UI bằng hai tài khoản thật; chưa đối chiếu SQL trực tiếp cho lần nghiệm thu này.
+- [x] HMAC/helper/cấu hình đã nối từ server vào repository; bật mới lưu hash, lấy lại link HMAC qua endpoint invitation không xoay link. Khóa local đã kiểm tra hợp lệ, không ghi/in giá trị. Thiếu/sai khóa không âm thầm đổi link; chủ vẫn tắt được chia sẻ.
+- [ ] Giữ cùng khóa riêng qua deploy/restart thật và nghiệm thu link; không dùng khóa Clerk hoặc sinh khóa thay thế khi thiếu.
+- [x] Cập nhật link cũ qua POST có xác nhận, chỉ đổi version/hash sau COMMIT. Test/Chrome giả đạt cho quyền, hủy/lỗi/retry và 390px. Người dùng xác nhận hủy rồi cập nhật bằng hai tài khoản thật: F5 giữ link/nét, thành viên vẽ tiếp không cần tham gia lại.
+- [x] Đổi chế độ qua hàng đợi/transaction cùng nét/join/preview; tắt xóa thành viên khác, vô hiệu hóa link và đóng socket cộng tác 4403 sau COMMIT. Test chứng minh rollback không ngắt người đang vẽ, nét xếp trước vẫn lưu và frame xếp sau bị chặn.
+- [x] Quyền backend đã test: riêng tư chỉ chủ truy cập, thành viên không đổi tên/chế độ hoặc lấy link quản lý; bật lại cần link mới. Người dùng xác nhận join/vẽ và thu quyền chặn link cũ trên UI; kiểm tra các quyền quản lý bằng tài khoản thành viên thật vẫn còn chờ.
 
 **Đạt khi:** hai chế độ kiểm soát đúng HTTP/WebSocket; sao chép lại cùng link, bật/tắt không đổi ID hoặc bản vẽ.
 
@@ -68,14 +70,15 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 - [x] Đưa danh sách/tạo dự án hiện có vào `/studio`, bỏ mục Bộ sưu tập riêng; `/gallery` chuyển về Studio. Nhãn giao diện dùng “dự án”, editor có nút Về Studio.
 - [x] Lưới thẻ responsive có tên/chế độ/vai trò; bấm cả thẻ để mở. Thẻ “+” mở dialog tên, Hủy/Esc và chặn gửi trùng; Chrome với SDK/API giả đã kiểm tra tạo/lỗi/đăng xuất và 390px.
 - [x] Hai mục Cá nhân/Chung lọc metadata đã tải, có ngày cập nhật và thông báo mục trống. Tải lại giữ mục đã chọn, đổi tài khoản reset bộ lọc; kiểm tra Chrome bằng dữ liệu giả đạt.
-- [x] Cache danh sách/bộ lọc trong Pinia theo tài khoản: quay lại Studio hiện card ngay và cập nhật ngầm, không gửi trùng GET đang chạy. Giữ card khi lỗi dịch vụ, xóa khi lỗi xác thực/đăng xuất/đổi tài khoản kể cả ngoài Studio; bỏ phản hồi cũ, thêm thẻ vừa tạo vào cache. 7 test store và Chrome với dịch vụ giả đạt; F5 tải lại danh sách.
+- [x] Cache card/bộ lọc theo tài khoản, cập nhật ngầm và bỏ phản hồi cũ. Đổi tên/chế độ cập nhật card; thu quyền loại card ngay. 10 test store và Chrome giả đạt; F5 tải lại danh sách.
 - [x] Cache editor theo dự án/tài khoản: khóa vẽ đến khi quyền/room.state hợp lệ, giữ nét chờ/rejected và link phiên. Rời trang đóng socket; mở lại đối chiếu/retry UUID cũ. Giữ tối đa năm phiên hoàn tất, không loại phiên có nét chưa lưu. Người dùng xác nhận dự án → Trang chủ → mở lại giữ nét và vẽ tiếp được; mất ACK/link/quyền kiểm chứng bằng test/Chrome giả. F5/đóng tab xóa RAM, chỉ nét đã xác nhận lưu bền.
 - [x] Tạo dự án Cá nhân thành công thì mở `/studio/:id`. Ngày 04/11/2026, người dùng xác nhận đúng editor/tên, vẽ và F5 giữ nét bằng tài khoản thật. Chrome với dịch vụ giả đã kiểm tra chờ/lỗi, gửi trùng và phản hồi sau đăng xuất/rời trang.
 - [x] `StudioEditor` dùng chung; `draft` giữ Vẽ thử, `board` giữ dự án và `ProjectView` kiểm tra quyền/kết nối. Điều hướng không xóa bản nháp/redo; cache dự án bị xóa khi mất quyền/đổi tài khoản. Undo/redo dự án vẫn chưa triển khai.
-- [ ] Nối điều khiển đổi tên/chế độ vào editor; undo/redo dự án tự lưu theo Pha 6.
-- [ ] Hộp Chia sẻ cho chủ chọn Cá nhân/Cùng chỉnh sửa, sao chép link; chuyển về Cá nhân dùng dialog xác nhận theo giao diện hiện có.
-- [ ] Link → đăng nhập nếu cần → tự tham gia/mở đúng Canvas; thành viên thấy chế độ nhưng không có quyền quản lý.
-- [ ] Hoàn thiện thu quyền chủ động qua API/chế độ: trở về Studio và báo lý do. HTTP từ chối/đổi tài khoản đã xóa cache; rời editor đóng socket/timer nhưng giữ phiên cùng tài khoản để mở lại.
+- [x] Chủ đổi tên qua dialog 1–100 ký tự, chặn gửi trùng; cập nhật editor/card sau xác nhận, giữ nét/sequence/bộ lọc. Người dùng xác nhận tên mới và nét giữ đúng sau mở lại/F5 bằng tài khoản thật. Test/Chrome giả đạt cho lỗi, phản hồi trễ, quyền thành viên và 390px.
+- [x] Hộp Chia sẻ cho chủ ở cả hai chế độ, nối GET/PATCH, cập nhật editor/card sau xác nhận. Chặn đổi khi mất kết nối/còn nét chờ hoặc lỗi lưu; chặn gửi trùng và đóng hộp khi đang ghi. Chrome giả kiểm tra lỗi, phản hồi trễ, F5 và 390px đạt.
+- [x] Chọn Cá nhân cần xác nhận thu quyền; HMAC được khôi phục/copy, tắt xóa link, bật lại có link mới. Link cũ có nút cập nhật/xác nhận, giữ URL cũ khi hủy/lỗi và chỉ hiện URL mới sau xác nhận server. Undo/redo dự án còn theo Pha 6.
+- [x] Link hợp lệ tự gửi join khi Clerk sẵn sàng; đăng nhập xong tự vào Canvas, bỏ nút Tham gia phòng. Chặn gửi trùng, bỏ kết quả cũ khi đổi tài khoản/link/rời trang; lỗi có Thử lại, không tự lặp. 8 test watcher và Chrome giả đạt; đăng nhập thật còn chờ. Quyền thành viên vẫn do backend kiểm tra.
+- [x] Nhận 4403 xóa cache/nét chờ, dừng retry, loại card và chuyển về Studio với lý do. Test/Chrome giả đạt cho phản hồi trễ/đổi tài khoản; người dùng xác nhận thành viên trở về Studio kèm thông báo khi chủ tắt chia sẻ.
 - [x] Ba trang chính: `/studio` danh sách, `/studio/try` vẽ thử, `/studio/:id` dự án. `/gallery` và `/rooms/:id` chỉ chuyển hướng, giữ query/hash; test router và Chrome đạt. Danh sách/link mời sau khi tham gia mở đúng editor Studio.
 
 **Phụ thuộc:** phần gộp giao diện đã làm trước theo ưu tiên mới, dùng giao thức hiện có. Điều khiển chia sẻ/undo tự lưu mới vẫn phụ thuộc Pha 4/6. **Đạt khi:** tạo → mở → vẽ → chia sẻ → về Cá nhân dùng được trên cùng dự án, giữ phong cách giao diện hiện tại.
@@ -105,7 +108,7 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 
 **Phụ thuộc:** Pha 4–6; chạy lại sau Docker.
 
-- [ ] Hai tài khoản hoàn thành tạo dự án → tự lưu → chia sẻ → cùng vẽ → thu quyền → mở lại.
+- [x] Người dùng nghiệm thu hai tài khoản: bật chia sẻ → copy/F5 giữ link → tham gia/vẽ → thu quyền → thành viên về Studio, link cũ bị chặn và nét của chủ giữ nguyên.
 - [ ] Hiển thị rõ lỗi phiên, link vô hiệu, hết chỗ, database, mất mạng và dịch vụ khởi động chậm.
 - [ ] Chờ thao tác được xác nhận trước đổi chế độ; không báo đã lưu khi còn nét chờ hoặc ghi lỗi.
 
@@ -113,10 +116,14 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 
 ### Pha 9 — Kiểm thử hồi quy
 
-**Nền tảng:** frontend có 50 test (4 Canvas, 26 WebSocket/cache editor, 2 nháp, 11 Studio, 7 cache danh sách), build/type-check/lint/format đạt. Chrome giả kiểm chứng khóa vẽ đến khi đồng bộ, mất ACK qua chuyển dự án, link phiên, từ chối quyền và đổi tài khoản. Backend gần nhất: 66 test; migration đã kiểm tra trên Supabase. Người dùng xác nhận tạo/vẽ/F5, giữ nháp/redo qua dự án và mở lại dự án đủ nét/vẽ tiếp được bằng tài khoản thật.
+**Nền tảng:** frontend 76 test (4 Canvas, 27 WebSocket/cache, 2 nháp, 25 Studio/đổi tên/chia sẻ, 10 danh sách, 8 lời mời), build/type-check/lint/format đạt; backend gần nhất 94 test. Chrome giả đã kiểm tra tự tham gia, chờ đăng nhập, lỗi/retry, phản hồi trễ và 390px. Người dùng nghiệm thu bật/tắt và cập nhật link cũ bằng hai tài khoản thật; tự tham gia còn chờ.
 
-- [ ] Cập nhật test cho tạo mặc định riêng tư, hai nhóm dự án, đổi tên/chế độ, quyền chủ/thành viên và lỗi đầu vào.
-- [ ] Kiểm tra link ổn định qua mở lại/restart, link cũ chuyển đổi đúng; tắt chia sẻ chặn HTTP/socket, bật lại cần link mới.
+- [x] Người dùng nghiệm thu đổi tên bằng tài khoản thật: editor → Về Studio → mở lại/F5 giữ đúng tên và nét.
+- [x] Người dùng nghiệm thu cập nhật link cũ: hủy rồi xác nhận, F5 giữ link mới/bản vẽ; thành viên đang mở vẫn vẽ được mà không tham gia lại.
+- [ ] Nghiệm thu link hợp lệ bằng tài khoản đã đăng nhập và cửa sổ chưa đăng nhập: tự vào đúng Canvas sau xác thực, không cần bấm tham gia; link cũ/tắt chia sẻ vẫn bị chặn.
+- [ ] Kiểm tra bằng tài khoản thành viên thật: không có nút đổi tên; phạm vi này hiện mới kiểm chứng bằng test/dịch vụ giả.
+- [ ] Bổ sung test cho chuyển chế độ, thu quyền và tích hợp đầy đủ hai nhóm dự án; test đổi tên/đầu vào đã có.
+- [ ] Nghiệm thu link qua restart backend, bật lại sau thu quyền và người chưa tham gia thử link cũ/mới sau nâng HMAC; nâng link/F5/giữ thành viên đã xác nhận.
 - [ ] Kiểm tra tự lưu/visibility/v1→v2, F5/restart, thứ tự, retry và chống trùng; hồi quy tẩy/công cụ/undo local.
 - [ ] Trên dữ liệu thử tách biệt: mất acknowledgement/lỗi ghi Supabase thật, vào muộn/vẽ đồng thời, phiên hết hạn, heartbeat và đổi tài khoản.
 - [ ] Hai tài khoản thử giao diện/bàn phím/màn hình nhỏ; chạy tối đa 10 client và ghi độ trễ/giới hạn.
@@ -142,8 +149,8 @@ Lệnh: `npm test` trong từng thư mục app; `npm run build` tại frontend. 
 
 ## 4. Thứ tự làm tiếp
 
-**Ưu tiên:** UI đổi tên dự án → hoàn thiện API chia sẻ Pha 4/tự lưu-undo-v2 Pha 6 → Pha 8–9 → Docker → deploy/tài liệu. Kiểm thử và tài liệu tiến hành cùng từng bước.
+**Ưu tiên:** hoàn thiện API chia sẻ Pha 4/tự lưu-undo-v2 Pha 6 → Pha 8–9 → Docker → deploy/tài liệu. Kiểm thử và tài liệu tiến hành cùng từng bước.
 
-**Đã xác nhận bằng tài khoản thật:** tạo/mở/vẽ/F5, giữ nháp/redo qua dự án, và quay lại dự án tiếp tục vẽ được. **Bước nhỏ tiếp theo:** chủ đổi tên ngay trong editor bằng API đã có. Quyền/cộng tác hai tài khoản trên UI mới còn chờ; undo/redo dự án tự lưu thuộc Pha 6.
+**Bước kiểm tra tiếp:** mở link bằng tài khoản đã đăng nhập và cửa sổ chưa đăng nhập → đăng nhập → tự vào đúng Canvas/vẽ được. Sau xác nhận, kiểm tra link HMAC qua restart và bật lại sau thu quyền trước khi sang undo/redo dự án Pha 6. Cập nhật link cũ đã được nghiệm thu; tự tham gia mới đạt test/Chrome giả.
 
 Snapshot bản sao riêng được xem xét sau khi luồng dự án/chia sẻ ổn định. Không đánh dấu hoàn thành vì chỉ có file hoặc build thành công; chỉ sửa và kiểm chứng bước đang làm.

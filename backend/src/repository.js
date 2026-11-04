@@ -1,6 +1,7 @@
 const { randomUUID, randomBytes, createHash } = require("node:crypto");
 const { AppError } = require("./errors");
 const { emptyDocument, checkSize, titleSchema } = require("./protocol");
+const { sharingChange } = require("./sharing");
 // Băm token lời mời để database không lưu token có thể dùng trực tiếp.
 const hash = (token) => createHash("sha256").update(token).digest("hex");
 // Tạo token lời mời ngẫu nhiên để chia sẻ liên kết vào phòng.
@@ -11,8 +12,8 @@ function metadata(row) {
     sharingEnabled: Boolean(row.sharing_enabled), hasCheckpoint: Boolean(row.checkpoint), updatedAt: row.updated_at };
 }
 class PostgresRepository {
-  // Giữ pool dùng chung cho các câu truy vấn của repository.
-  constructor(pool) { this.pool = pool; }
+  // Giữ pool và bộ sinh token từ cấu hình; thiếu khóa vẫn cho phép đọc/vẽ và tắt chia sẻ.
+  constructor(pool, { shareToken } = {}) { this.pool = pool; this.shareToken = shareToken; }
   // Kiểm tra cả cột chế độ dự án để không phục vụ API với schema chưa chạy migration mới.
   async ready() { await this.pool.query("SELECT id,sharing_enabled,sharing_version FROM drawing.rooms LIMIT 0"); }
   // Chạy nhiều câu truy vấn trong một giao dịch; lỗi thì hoàn tác toàn bộ.
@@ -65,6 +66,51 @@ class PostgresRepository {
   }
   // Chỉ trả thông tin phòng cho thành viên đã có quyền truy cập.
   async getRoom(userId, roomId) { return metadata(await this.member(this.pool, userId, roomId, false)); }
+  // Chủ đọc chế độ và lấy lại token HMAC hiện tại; chỉ đọc, không xoay link cũ hoặc trả hash/version nội bộ.
+  async getSharing(userId, roomId) {
+    const room = await this.member(this.pool, userId, roomId, false);
+    this.owner(room, userId);
+    if (room.sharing_enabled && room.sharing_version > 0) {
+      const { inviteToken } = sharingChange({ id: room.id, enabled: true,
+        version: room.sharing_version, inviteHash: room.invite_hash }, true, this.shareToken);
+      return { enabled: true, inviteToken };
+    }
+    return { enabled: Boolean(room.sharing_enabled) };
+  }
+  // Khóa dự án, đổi chế độ/hash và thu quyền trong cùng transaction; chỉ trả kết quả sau COMMIT.
+  async setSharing(userId, roomId, enabled) {
+    return this.transaction(async (client) => {
+      const room = await this.member(client, userId, roomId);
+      this.owner(room, userId);
+      const change = sharingChange({ id: room.id, enabled: room.sharing_enabled,
+        version: room.sharing_version, inviteHash: room.invite_hash }, enabled, this.shareToken);
+      let updated = room;
+      if (room.sharing_enabled !== enabled) {
+        const result = await client.query("UPDATE drawing.rooms SET sharing_enabled=$2,sharing_version=$3,invite_hash=$4,updated_at=now() WHERE id=$1 RETURNING *",
+          [room.id, enabled, change.version, change.inviteHash]);
+        updated = result.rows[0];
+        if (!enabled) await client.query("DELETE FROM drawing.room_members WHERE room_id=$1 AND user_id<>$2", [room.id, room.owner_id]);
+      }
+      return { room: metadata(updated), enabled, ...(change.inviteToken ? { inviteToken: change.inviteToken } : {}) };
+    });
+  }
+  // Chỉ nâng link cũ sau xác nhận của chủ; retry giữ token, không đổi nét/thành viên hoặc thời gian cập nhật.
+  async upgradeInvitation(userId, roomId) {
+    return this.transaction(async (client) => {
+      const room = await this.member(client, userId, roomId);
+      this.owner(room, userId);
+      if (!room.sharing_enabled) throw new AppError(409, "SHARING_DISABLED", "Enable sharing before updating the invitation.");
+      const change = sharingChange({ id: room.id, enabled: true, version: room.sharing_version,
+        inviteHash: room.invite_hash }, true, this.shareToken, { upgradeLegacy: true });
+      let updated = room;
+      if (room.sharing_version === 0) {
+        const result = await client.query("UPDATE drawing.rooms SET sharing_version=$2,invite_hash=$3 WHERE id=$1 RETURNING *",
+          [room.id, change.version, change.inviteHash]);
+        updated = result.rows[0];
+      }
+      return { room: metadata(updated), enabled: true, inviteToken: change.inviteToken };
+    });
+  }
   // Chỉ chủ được đổi tên; khóa hàng và commit trước khi trả metadata, giữ nguyên nét và chế độ chia sẻ.
   async renameRoom(userId, roomId, title) {
     const roomTitle = titleSchema(title);
@@ -75,16 +121,21 @@ class PostgresRepository {
       return metadata(updated);
     });
   }
-  // Link cũ chỉ được thay khi chủ đang ở chế độ chung; dự án Cá nhân chờ API bật chia sẻ riêng.
+  // Lấy lại nguyên link HMAC; chỉ dự án version 0 còn dùng hành vi phát link ngẫu nhiên của endpoint cũ.
   async invitation(userId, roomId) {
-    const inviteToken = token();
-    await this.transaction(async (client) => {
+    return this.transaction(async (client) => {
       const room = await this.member(client, userId, roomId);
       this.owner(room, userId);
       if (!room.sharing_enabled) throw new AppError(409, "SHARING_DISABLED", "Enable sharing before creating an invitation.");
+      if (room.sharing_version > 0) {
+        const change = sharingChange({ id: room.id, enabled: true, version: room.sharing_version,
+          inviteHash: room.invite_hash }, true, this.shareToken);
+        return { inviteToken: change.inviteToken };
+      }
+      const inviteToken = token();
       await client.query("UPDATE drawing.rooms SET invite_hash=$2 WHERE id=$1", [roomId, hash(inviteToken)]);
+      return { inviteToken };
     });
-    return { inviteToken };
   }
   // Từ chối thao tác dành riêng cho chủ phòng nếu ID không khớp.
   owner(room, userId) {

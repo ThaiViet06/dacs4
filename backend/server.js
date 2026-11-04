@@ -3,6 +3,7 @@ const { readConfig } = require("./src/config");
 const { createTokenVerifier } = require("./src/auth");
 const { PostgresRepository } = require("./src/repository");
 const { createApplication } = require("./src/application");
+const { createShareTokenGenerator } = require("./src/sharing");
 
 // Đọc cấu hình, kiểm tra database rồi khởi động API và WebSocket.
 async function main() {
@@ -12,7 +13,9 @@ async function main() {
   const pool = new Pool(config.database);
   // Ghi mã lỗi của kết nối PostgreSQL nhàn rỗi mà không in thông tin bí mật.
   pool.on("error", (error) => console.error("Database pool error:", error.code || error.name));
-  const repository = new PostgresRepository(pool);
+  // Cấp bộ sinh token từ khóa cấu hình; thiếu khóa thì API bật chia sẻ báo lỗi, các luồng cũ vẫn dùng được.
+  const shareToken = config.shareLinkSecret ? createShareTokenGenerator(config.shareLinkSecret) : undefined;
+  const repository = new PostgresRepository(pool, { shareToken });
   try { await repository.ready(); } catch (error) { await pool.end(); throw error; }
   const application = createApplication({
     repository, origins: config.origins, verifyToken,

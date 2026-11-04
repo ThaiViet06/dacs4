@@ -48,9 +48,10 @@ npm run build
 
 ### Kiểm tra Canvas và kết nối phòng
 
-Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 50 test
-dùng Node test runner: 4 test tọa độ/replay, 26 WebSocket/cache editor, 2 bản nháp,
-11 Studio/lifecycle/routing và 7 cache danh sách. Dùng dịch vụ giả khi cần;
+Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 76 test
+dùng Node test runner: 4 test tọa độ/replay, 27 WebSocket/cache editor, 2 bản nháp,
+25 Studio/lifecycle/routing/đổi tên/chia sẻ, 10 cache danh sách và 8 lời mời.
+Dùng dịch vụ giả khi cần;
 không cần Clerk, Supabase hoặc backend đang chạy. Các test
 kiểm tra xác thực, tải trạng thái, đổi phòng/đăng xuất, refresh token, phản hồi
 trễ, nét chờ/acknowledgement, thứ tự nét/tẩy, Offline/Online và retry khi tải token
@@ -76,6 +77,13 @@ chung `StudioEditor.vue`. Ctrl+Z hoàn tác; Ctrl+Y hoặc Ctrl+Shift+Z làm l�
 bản nháp, kể cả sau khi chỉnh cỡ bút/màu. Ô nhập văn bản giữ phím tắt riêng.
 Dự án tự lưu chưa hỗ trợ undo/redo; giao diện báo rõ giới hạn này.
 
+Chủ dự án có nút **Đổi tên** trong editor, dùng `PATCH /api/rooms/:id` hiện có.
+Dialog kiểm tra 1–100 ký tự, chặn gửi trùng, chỉ đổi tên editor/card sau xác nhận;
+không thay nét/sequence. Lỗi giữ nội dung nhập để thử lại, phản hồi sau khi rời trang
+bị bỏ qua. Chrome với dịch vụ giả đã kiểm tra quyền, lỗi và bố cục 390px;
+người dùng đã xác nhận tên editor/card và nét giữ đúng sau mở lại/F5 bằng tài khoản thật.
+Kiểm tra quyền thành viên bằng tài khoản thật còn chờ trong `../Plans.md`.
+
 Store `draft.ts` giữ bản nháp và undo/redo độc lập với `board.ts`. Đi qua Trang chủ,
 Studio hoặc dự án đã lưu không xóa bản nháp; Tạo trang mới chỉ xóa bản nháp đó.
 `board.ts` giữ phiên theo dự án/tài khoản: khi quay lại, Canvas cũ hiện nhưng khóa
@@ -85,7 +93,27 @@ socket, giữ nét chờ để mở lại cùng dự án thì retry UUID cũ, tr
 Cache giữ tối đa năm phiên hoàn tất gần nhất; phiên còn nét chờ/lỗi không bị loại.
 Link chia sẻ đã tạo giữ cùng phiên nên chuyển trang không cần tạo link mới.
 F5/đóng tab xóa RAM (gồm bản nháp/nét chưa xác nhận/link đang nhớ); nét đã được
-server xác nhận vẫn nằm trong database. Link ổn định qua F5/restart thuộc kế hoạch API chia sẻ.
+server xác nhận vẫn nằm trong database. Link HMAC được lấy lại từ API khi chủ mở hộp Chia sẻ sau F5.
+
+Chủ có nút **Chia sẻ** ở cả Cá nhân và Chung. Hộp đọc trạng thái bằng GET, đổi chế
+độ bằng PATCH; chỉ đổi editor/card sau xác nhận và chuyển card sang đúng nhóm.
+Chờ hết nét chưa xác nhận/lỗi lưu trước khi đổi. Chuyển về Cá nhân có xác nhận
+thu quyền; đang ghi thì nút đóng/Esc bị khóa, lỗi giữ chế độ đã xác nhận để thử lại.
+Link HMAC hiện ngay và copy được. Dự án dùng link cũ có nút **Cập nhật link**,
+kể cả khi URL cũ còn trong cache. Hộp xác nhận nói rõ link trước sẽ hết hiệu lực,
+thành viên đang tham gia giữ quyền. Chỉ gọi API sau xác nhận; hủy/lỗi giữ URL cũ,
+gửi lại không xoay link thêm lần nữa. Sau thành công, nút cập nhật biến mất và F5
+lấy lại đúng link HMAC. Người dùng xác nhận hủy rồi cập nhật bằng hai tài khoản
+thật: F5 giữ link/nét, thành viên đang mở tiếp tục vẽ mà không cần tham gia lại.
+
+Socket nhận 4403 dừng retry, xóa cache/nét chờ dự án và đưa thành viên về Studio
+với thông báo. Card bị loại ngay, GET trễ không khôi phục card; đổi tài khoản xóa
+thông báo. Người nhận link đã đăng nhập được tự tham gia/mở Canvas sau xác nhận
+backend. Nếu chưa đăng nhập, trang chờ Clerk rồi tự tiếp tục sau đăng nhập; không
+còn nút Tham gia phòng. Link sai/hết hiệu lực báo lỗi, lỗi kết nối có Thử lại và
+không tự lặp request. Đổi tài khoản/link hoặc rời trang bỏ phản hồi cũ, request
+đang chờ không nhận thêm lần bấm trùng. Test/Chrome với SDK/API/ws giả đạt cho
+desktop/390px; luồng đăng nhập thật còn chờ trong `../Plans.md`.
 
 Thẻ dự án mở editor khi bấm. Dialog tạo kiểm tra tên, chặn gửi trùng và có Hủy/Esc.
 Server xác nhận tạo thành công thì mở ngay `/studio/:id` theo ID trả về;
@@ -103,7 +131,10 @@ phản hồi GET cũ không ghi đè thẻ mới. Thời gian cập nhật hiể
 Chrome đã kiểm tra phím tắt/focus, chuyển trang, giữ bản nháp và link cũ. Test
 Vue kiểm tra lifecycle, khóa công cụ, quyền/dialog, bỏ metadata trễ. Bộ lọc/ngày
 cập nhật, cache theo tài khoản và phục hồi editor đã kiểm tra Chrome bằng dữ liệu giả;
-bật/tắt chia sẻ còn trong `../Plans.md`.
+bật/tắt/copy/F5/thu quyền và 390px cũng đã kiểm tra bằng dịch vụ giả. Người dùng
+đã xác nhận hai tài khoản thật: copy/F5 giữ link, tham gia/vẽ, tắt chia sẻ đưa thành
+viên về Studio kèm thông báo, chặn link cũ và giữ bản vẽ chủ. Restart backend và
+bật lại sau thu quyền còn chờ trong `../Plans.md`.
 
 ### Lint with [ESLint](https://eslint.org/)
 

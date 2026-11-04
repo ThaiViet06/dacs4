@@ -45,6 +45,18 @@ Máy chủ và script migration dùng chung bộ nạp này.
 Không commit `.env.local`, `.env` hoặc khóa thật. File mẫu chỉ chứa giá trị minh họa.
 Khi triển khai, cấp cấu hình bằng biến môi trường runtime.
 
+`SHARE_LINK_SECRET` là khóa riêng cho link chia sẻ: 32 byte ngẫu nhiên, ghi thành
+64 ký tự hex. Cần khóa để bật chia sẻ mới hoặc lấy lại link HMAC; để trống vẫn
+đọc/vẽ và tắt chia sẻ được. Cấu hình kiểm tra định dạng và không in giá trị khi sai.
+Để chuẩn bị khóa, tự chạy lệnh sau rồi lưu kết quả vào `backend/.env.local`:
+
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+Giữ nguyên khóa qua restart/deploy; dùng một khóa mới sẽ tạo token khác.
+Khóa này chỉ ở backend, không dùng lại khóa Clerk hoặc đưa vào biến `VITE_*`.
+
 ## Chạy và kiểm tra
 
 Chạy bộ test backend độc lập với database từ `backend/`:
@@ -80,10 +92,16 @@ lỗi. Test mất acknowledgement chủ động ngắt client khi COMMIT đang c
 sau COMMIT giữ nguyên sequence, retry sau rollback lưu đúng một lần.
 4 test trong `tests/rename.test.js` dùng repository PostgreSQL với SQL giả: chủ
 đổi tên dự án Cá nhân/Chung, giữ nguyên nét/quyền/sequence, chặn thành viên và
-rollback khi UPDATE/COMMIT lỗi. Tổng cộng **66 test backend**, không cần dịch vụ thật.
+rollback khi UPDATE/COMMIT lỗi. 6 test trong `tests/sharing.test.js` kiểm tra GET
+trạng thái chia sẻ: quyền chủ, hai chế độ, origin/xác thực/UUID, lỗi database và
+không thay dữ liệu. 6 test trong `tests/share-token.test.js` kiểm tra HMAC ổn định,
+đổi UUID/version/khóa, định dạng token và cấu hình khóa an toàn. 16 test trong
+`tests/sharing-toggle.test.js` dùng SQL giả/HTTP/client ws thật kiểm tra bật/tắt,
+retry/link qua tạo lại repository, quyền, rollback, thu quyền socket và nâng link
+cũ có xác nhận, giữ thành viên đang vẽ. Tổng cộng **94 test backend**, không cần dịch vụ thật.
 
 `src/memory-repository.js` cung cấp `ready()`, `createRoom()`, `listRooms()` và
-`getRoom()`, `renameRoom()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
+`getRoom()`, `renameRoom()`, `getSharing()`, `setSharing()`, `upgradeInvitation()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
 dự án mới mặc định Cá nhân và danh sách tối đa 100 mục. Metadata có
 `sharingEnabled`; API tạo chỉ trả `{ room }`, không trả token. Repository tạm vẫn
 có token nội bộ cho fixture; giao diện lấy link qua luồng chia sẻ riêng.
@@ -106,8 +124,72 @@ và giữ nguyên chủ, chế độ chia sẻ, sequence, nét vẽ, checkpoint 
 
 Thành viên dự án chung nhận 403, người ngoài/phòng không tồn tại nhận cùng 404;
 thiếu đăng nhập nhận 401, dữ liệu sai nhận 400, database lỗi nhận 503. CORS cho
-phép PATCH từ origin tin cậy. Bước này có API; điều khiển đổi tên trên editor sẽ
-được thêm trong Pha 5.
+phép PATCH từ origin tin cậy. Editor đã có nút đổi tên; người dùng xác nhận tên
+editor/card và nét vẽ giữ đúng sau mở lại/F5 bằng tài khoản thật.
+
+## API đọc trạng thái chia sẻ
+
+`GET /api/rooms/:id/sharing` dùng Bearer token Clerk, chỉ dành cho chủ dự án.
+Thành công trả `200 { enabled, inviteToken? }` với `Cache-Control: no-store`.
+Token chỉ được trả cho chủ khi đang chia sẻ bằng HMAC, giúp khôi phục đúng link
+sau F5. GET chỉ đọc, không tạo/thay link, đổi thời gian cập nhật, thành viên hoặc
+nét vẽ; không trả hash/version nội bộ. Link cũ version 0 không trả token.
+
+Thành viên dự án chung nhận 403 `OWNER_REQUIRED`; người ngoài, dự án không tồn tại
+và thành viên cũ của dự án Cá nhân cùng nhận 404 `ROOM_NOT_FOUND`. Thiếu/hết phiên
+nhận 401, UUID sai nhận 400, database lỗi nhận 503 thay vì giả định đang riêng tư.
+Đã kiểm tra bằng HTTP với repository/SQL giả. Người dùng đã xác nhận qua giao
+diện bằng hai tài khoản thật: copy/F5 giữ link, tham gia/vẽ và thu quyền thành công.
+
+`src/sharing.js` cung cấp `createShareTokenGenerator(secret)`: dùng HMAC-SHA256
+với dữ liệu `drawing-share:v1:<uuid viết thường>:<version>` và trả token base64url
+43 ký tự, tương thích định dạng token join hiện có. Cùng ID/version/khóa cho cùng
+token khi tạo lại bộ sinh; đổi một trong ba cho token khác. Helper kiểm tra UUID,
+version nguyên không âm và khóa trước khi tạo token, không tự sinh khóa dự phòng.
+Helper đã nối vào repository qua `server.js`, không đổi link cũ khi khởi động.
+
+## API bật/tắt chia sẻ
+
+`PATCH /api/rooms/:id/sharing` nhận đúng JSON `{ "enabled": true }` hoặc
+`{ "enabled": false }`, chỉ dành cho chủ. Trả `200 { room, enabled, inviteToken? }`
+sau COMMIT; hash/version nội bộ không được trả về. Gửi lại cùng trạng thái không
+đổi link, version hoặc thời gian cập nhật.
+
+Bật từ Cá nhân tăng version, tạo token HMAC và chỉ lưu hash. Chủ lấy lại đúng link
+qua GET chia sẻ, PATCH bật lặp hoặc `POST /api/rooms/:id/invitation`, kể cả sau restart với cùng
+khóa. Dự án cũ version 0 đang chung giữ nguyên link khi PATCH bật lặp, không trả
+`inviteToken` vì token ngẫu nhiên cũ không thể khôi phục từ hash; endpoint invitation
+cũ vẫn phát link ngẫu nhiên mới cho version 0 để tương thích; UI hiện dùng API nâng link có xác nhận bên dưới.
+
+Tắt tăng version, thay hash và xóa thành viên khác trong cùng transaction. Sau
+COMMIT, các socket cộng tác bị đóng mã 4403, socket chủ được giữ; nét/preview xếp
+sau thao tác thu quyền bị chặn. Bật lại không khôi phục thành viên cũ, cần link mới.
+ID, tên, nét, sequence và checkpoint giữ nguyên qua đổi chế độ.
+
+Body/UUID sai trả 400; thiếu/hết phiên 401; thành viên chung 403; người ngoài hoặc
+dự án thiếu cùng 404. Thiếu khóa hoặc khóa không khớp link HMAC hiện tại trả
+503 `SHARING_UNAVAILABLE`, không xoay link âm thầm; chủ vẫn tắt được chia sẻ.
+Lỗi UPDATE/DELETE/COMMIT rollback cả quyền/link và không ngắt socket.
+Đã test với SQL giả. Người dùng xác nhận bật/tắt qua UI bằng hai tài khoản thật:
+thành viên về Studio kèm thông báo, link cũ bị chặn, nét của chủ giữ nguyên.
+Lần nghiệm thu này chưa đối chiếu SQL trực tiếp hoặc thử restart với link HMAC.
+
+## Cập nhật link cũ sang HMAC
+
+`POST /api/rooms/:id/sharing/upgrade` nhận đúng `{ "confirmed": true }`, chỉ dành
+cho chủ dự án đang chia sẻ. Trả `200 { room, enabled: true, inviteToken }` sau
+COMMIT. Version 0 được nâng lên 1 và thay hash; giữ nguyên thời gian cập nhật,
+tài liệu, sequence, thành viên và socket. Gửi lặp hoặc đồng thời khi đã dùng
+HMAC trả cùng token, không đổi version lần nữa.
+
+Link cũ hết hiệu lực cho người chưa tham gia; thành viên hiện tại vẫn vẽ được.
+GET chia sẻ lấy lại token mới qua F5/restart với cùng khóa. Thiếu xác nhận/body
+sai nhận 400, thiếu/hết phiên 401, thành viên 403, người ngoài/phòng thiếu 404,
+dự án Cá nhân 409; thiếu khóa hoặc lỗi ghi nhận 503 và giữ link cũ.
+Đã kiểm tra bằng SQL giả/client ws thật và Chrome giả. Người dùng xác nhận bằng
+hai tài khoản thật: hủy rồi cập nhật, F5 giữ đúng link/bản vẽ và thành viên vẫn vẽ
+tiếp mà không cần tham gia lại. Restart với link HMAC và thử link cũ/mới bằng
+người chưa tham gia còn chờ nghiệm thu; chưa đối chiếu SQL trực tiếp cho lần này.
 
 ## Khởi tạo database
 
@@ -136,9 +218,11 @@ cả hai cột. `001_initial.sql` giữ nguyên checksum.
 mặc định riêng tư/version 0 và repository readiness đạt. Đối chiếu số lượng/hash
 các bảng xác nhận 2 phòng, 4 thành viên, 44 nét không thay đổi; phòng cũ vẫn chung.
 
-Đang ở bước nền tảng: chủ vẫn đọc/vẽ dự án Cá nhân, người khác không được vào
-bằng link và nút tạo link cũ được ẩn. API bật/tắt chia sẻ là bước tiếp theo trong
-[Plans.md](../Plans.md).
+Chủ đọc/vẽ dự án Cá nhân và bật chia sẻ qua UI; người khác chỉ tham gia khi chia sẻ
+đang bật. GET/PATCH và luồng thu quyền đã được người dùng xác nhận; chuyển link
+cũ sang HMAC đã được người dùng nghiệm thu. Frontend tự gọi API join sau khi
+Clerk sẵn sàng, không đổi kiểm tra token/chế độ/thành viên của backend; luồng tự
+tham gia đã test bằng dịch vụ giả, chờ nghiệm thu thật trong [Plans.md](../Plans.md).
 
 Chạy lệnh từ `backend/` nếu `DATABASE_CA_FILE` dùng đường dẫn tương đối. Thông tin
 đăng nhập database và CA được cấp qua cấu hình hiện có; không tắt kiểm tra TLS.
