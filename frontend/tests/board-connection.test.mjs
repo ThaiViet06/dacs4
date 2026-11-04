@@ -18,6 +18,8 @@ const otherRoomId = '00000000-0000-4000-8000-000000000002'
 function setup(context, getToken = async () => 'test-session') {
   const sockets = []
   const timers = new Map()
+  const network = new EventTarget()
+  network.navigator = { onLine: true }
   // Giữ lại timer để từng test chủ động kích hoạt refresh hoặc reconnect, không phải chờ thời gian thật.
   const schedule = (callback, delay) => {
     const id = Symbol()
@@ -63,6 +65,7 @@ function setup(context, getToken = async () => 'test-session') {
     'module',
     'exports',
     'WebSocket',
+    'window',
     'setTimeout',
     'clearTimeout',
     'setInterval',
@@ -73,6 +76,7 @@ function setup(context, getToken = async () => 'test-session') {
     module,
     module.exports,
     Socket,
+    network,
     schedule,
     (id) => timers.delete(id),
     schedule,
@@ -81,7 +85,7 @@ function setup(context, getToken = async () => 'test-session') {
   setActivePinia(createPinia())
   const board = module.exports.useBoardStore()
   context.after(() => board.local())
-  return { board, sockets, timers }
+  return { board, sockets, timers, network }
 }
 
 // Tạo phản hồi trạng thái thống nhất; sequence không bằng số nét khi phòng mở từ bản sao có sẵn.
@@ -309,4 +313,219 @@ test('drawing while disconnected cannot send or add a new operation', async (con
   assert.equal(board.pendingCount, 0)
   assert.equal(board.document.operations.length, 1)
   assert.equal(socket.sent.length, sentBefore)
+})
+
+// Offline phải khóa vẽ ngay; có mạng thì xác thực lại và chờ đủ trạng thái mới trước khi mở Canvas.
+test('offline then online fetches a fresh token and restores strokes drawn by another member', async (context) => {
+  const tokenRequests = []
+  const { board, sockets, timers, network } = setup(context, async (fresh) => {
+    tokenRequests.push(fresh)
+    return `session-${tokenRequests.length}`
+  })
+  await board.connect(roomId)
+  sockets[0].open()
+  const initial = roomState()
+  sockets[0].receive(initial)
+  network.navigator.onLine = false
+  network.dispatchEvent(new Event('offline'))
+  assert.equal(board.status, 'reconnecting')
+  assert.equal(sockets[0].readyState, 3)
+  assert.equal(timers.size, 0)
+  board.commit(roomState().document.operations[0])
+  assert.equal(board.pendingCount, 0)
+  network.navigator.onLine = true
+  network.dispatchEvent(new Event('online'))
+  await new Promise(setImmediate)
+  assert.deepEqual(tokenRequests, [true, true])
+  assert.equal(sockets.length, 2)
+  sockets[1].open()
+  sockets[1].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+  assert.notEqual(board.status, 'connected')
+  assert.equal(sockets[1].sent.at(-1).roomId, roomId)
+  const remote = roomState().document.operations[0]
+  sockets[1].receive({
+    ...initial,
+    sequence: 1,
+    document: { ...initial.document, operations: [...initial.document.operations, remote] },
+  })
+  assert.equal(board.status, 'connected')
+  assert.equal(board.error, '')
+  assert.equal(board.sequence, 1)
+  assert.deepEqual(board.document.operations, [...initial.document.operations, remote])
+  network.dispatchEvent(new Event('online'))
+  assert.equal(sockets.length, 2)
+})
+
+// Mở phòng khi chưa có mạng chỉ chờ online, không gọi Clerk hoặc tạo socket vô ích.
+test('an initially offline room waits for online before fetching a token', async (context) => {
+  let tokenRequests = 0
+  const { board, sockets, timers, network } = setup(context, async () => {
+    tokenRequests++
+    return 'test-session'
+  })
+  network.navigator.onLine = false
+  await board.connect(roomId)
+  assert.equal(tokenRequests, 0)
+  assert.equal(sockets.length, 0)
+  assert.equal(timers.size, 0)
+  assert.equal(board.status, 'reconnecting')
+  network.navigator.onLine = true
+  network.dispatchEvent(new Event('online'))
+  await new Promise(setImmediate)
+  assert.equal(tokenRequests, 1)
+  assert.equal(sockets.length, 1)
+})
+
+// Có mạng chưa chắc Clerk đã truy cập được; lỗi tải token tạm thời vẫn phải thử lại với backoff có giới hạn.
+test('temporary token failures retry with bounded backoff until a fresh session is available', async (context) => {
+  let tokenRequests = 0
+  const { board, sockets, timers } = setup(context, async () => {
+    if (++tokenRequests <= 7) throw new Error('Temporary network failure')
+    return 'recovered-session'
+  })
+  await board.connect(roomId)
+  for (let attempt = 0; attempt < 7; attempt++) {
+    assert.equal(board.status, 'reconnecting')
+    const retry = [...timers.values()].find(({ delay }) => delay !== 1000)
+    assert.ok(retry)
+    const cap = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5))
+    assert.ok(retry.delay >= cap * 0.8 && retry.delay <= cap)
+    await retry.callback()
+  }
+  assert.equal(tokenRequests, 8)
+  assert.equal(sockets.length, 1)
+  assert.notEqual(board.status, 'connected')
+  sockets[0].open()
+  assert.equal(sockets[0].sent[0].token, 'recovered-session')
+  sockets[0].receive(roomState())
+  assert.equal(board.status, 'connected')
+})
+
+// Lỗi mạng khi refresh không được giả thành lỗi hết phiên; chỉ mã 4401 từ server mới dừng retry.
+test('a refresh network failure reconnects but server authentication rejection stops retries', async (context) => {
+  let tokenRequests = 0
+  const { board, sockets, timers, network } = setup(context, async () => {
+    if (++tokenRequests === 2) throw new Error('Refresh network failure')
+    return 'test-session'
+  })
+  await board.connect(roomId)
+  sockets[0].open()
+  sockets[0].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+  sockets[0].receive(roomState())
+  const refresh = [...timers.values()].find(({ delay }) => delay > 40000 && delay < 50000)
+  await refresh.callback()
+  assert.equal(board.status, 'reconnecting')
+  const retry = [...timers.values()].find(({ delay }) => delay >= 800 && delay < 1000)
+  await retry.callback()
+  assert.equal(sockets.length, 2)
+  sockets[1].open()
+  sockets[1].close(4401)
+  assert.equal(board.status, 'error')
+  assert.equal(timers.size, 0)
+  network.dispatchEvent(new Event('online'))
+  assert.equal(sockets.length, 2)
+})
+
+// Đăng xuất khi offline phải bỏ lần chờ online và dữ liệu cũ, không tự nối lại tài khoản đã rời phòng.
+test('leaving an offline room cancels its online listener and prevents reconnection', async (context) => {
+  const { board, sockets, network } = setup(context)
+  await board.connect(roomId)
+  sockets[0].open()
+  sockets[0].receive(roomState())
+  network.navigator.onLine = false
+  network.dispatchEvent(new Event('offline'))
+  board.local()
+  network.navigator.onLine = true
+  network.dispatchEvent(new Event('online'))
+  await new Promise(setImmediate)
+  assert.equal(sockets.length, 1)
+  assert.equal(board.status, 'local')
+  assert.equal(board.room, null)
+  assert.equal(board.document.operations.length, 0)
+})
+
+for (const saved of [false, true]) {
+  // Hai nhánh mất acknowledgement: chỉ gửi lại UUID chưa có trên server, giữ đúng thứ tự với nét người khác.
+  test(`pending stroke ${saved ? 'already saved' : 'not yet saved'} survives offline recovery without duplication`, async (context) => {
+    const { board, sockets, network } = setup(context)
+    await board.connect(roomId)
+    sockets[0].open()
+    sockets[0].receive({ ...roomState(), document: model.emptyDocument() })
+    const operation = roomState().document.operations[0]
+    board.commit(operation)
+    assert.equal(board.pendingCount, 1)
+    network.navigator.onLine = false
+    network.dispatchEvent(new Event('offline'))
+    assert.equal(board.pendingCount, 1)
+    assert.deepEqual(board.operations, [operation])
+    network.navigator.onLine = true
+    network.dispatchEvent(new Event('online'))
+    await new Promise(setImmediate)
+    const returned = sockets[1]
+    returned.open()
+    returned.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+    assert.deepEqual(
+      returned.sent.map(({ type }) => type),
+      ['auth', 'room.join'],
+    )
+    assert.equal(board.pendingCount, 1)
+    assert.notEqual(board.status, 'connected')
+    const remote = roomState().document.operations[0]
+    const operations = saved ? [operation, remote] : [remote]
+    returned.receive({
+      ...roomState(),
+      sequence: saved ? 2 : 1,
+      document: { ...model.emptyDocument(), operations },
+    })
+    const retries = returned.sent.filter(({ type }) => type === 'operation.commit')
+    assert.equal(retries.length, saved ? 0 : 1)
+    if (!saved) {
+      assert.deepEqual(retries[0].operation, operation)
+      assert.equal(board.pendingCount, 1)
+      returned.receive({ type: 'operation.committed', operation, sequence: 2 })
+    }
+    // Ack lặp sau reconnect không được thêm lại nét đã có trong trạng thái hoặc vừa được xác nhận.
+    returned.receive({
+      type: 'operation.committed',
+      operation,
+      sequence: saved ? 1 : 2,
+      duplicate: true,
+    })
+    assert.equal(board.pendingCount, 0)
+    assert.equal(board.sequence, 2)
+    assert.equal(board.status, 'connected')
+    assert.equal(board.operations.length, 2)
+    assert.equal(new Set(board.operations.map(({ id }) => id)).size, 2)
+    assert.deepEqual(board.document.operations, saved ? [operation, remote] : [remote, operation])
+  })
+}
+
+// Ack nhảy sequence yêu cầu tải lại phòng; không bỏ nét chờ trước khi biết đầy đủ trạng thái có thẩm quyền.
+test('a sequence gap keeps the pending stroke until authoritative state confirms it', async (context) => {
+  const { board, sockets, timers } = setup(context)
+  await board.connect(roomId)
+  sockets[0].open()
+  sockets[0].receive({ ...roomState(), document: model.emptyDocument() })
+  const operation = roomState().document.operations[0]
+  board.commit(operation)
+  sockets[0].receive({ type: 'operation.committed', operation, sequence: 2 })
+  assert.equal(board.status, 'reconnecting')
+  assert.equal(board.sequence, 0)
+  assert.equal(board.pendingCount, 1)
+  assert.deepEqual(board.operations, [operation])
+  const retry = [...timers.values()].find(({ delay }) => delay >= 800 && delay < 1000)
+  await retry.callback()
+  sockets[1].open()
+  sockets[1].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+  assert.equal(board.pendingCount, 1)
+  const remote = roomState().document.operations[0]
+  sockets[1].receive({
+    ...roomState(),
+    sequence: 2,
+    document: { ...model.emptyDocument(), operations: [remote, operation] },
+  })
+  assert.equal(board.pendingCount, 0)
+  assert.equal(board.sequence, 2)
+  assert.deepEqual(board.document.operations, [remote, operation])
+  assert.ok(!sockets[1].sent.some(({ type }) => type === 'operation.commit'))
 })

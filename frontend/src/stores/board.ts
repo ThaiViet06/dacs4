@@ -41,6 +41,7 @@ export const useBoardStore = defineStore('board', () => {
   let tokenTimer: ReturnType<typeof setTimeout> | undefined
   let watchdog: ReturnType<typeof setTimeout> | undefined
   let previewTimer: ReturnType<typeof setInterval> | undefined
+  let stopNetworkWatching: (() => void) | undefined
   let generation = 0
   let attempt = 0
   let target = ''
@@ -53,6 +54,8 @@ export const useBoardStore = defineStore('board', () => {
   // Đóng kết nối hiện tại, hủy bộ hẹn giờ và bỏ trạng thái hiện diện tạm thời.
   function disconnect() {
     generation++
+    stopNetworkWatching?.()
+    stopNetworkWatching = undefined
     clearTimeout(retryTimer)
     clearTimeout(tokenTimer)
     clearTimeout(watchdog)
@@ -97,6 +100,40 @@ export const useBoardStore = defineStore('board', () => {
     attempt = 0
     error.value = ''
     const current = generation
+    // Trình duyệt báo offline thì đóng socket ngay và giữ nguyên tài liệu/nét chờ để nối lại cùng phòng.
+    function pauseForOffline() {
+      disconnect()
+      status.value = 'reconnecting'
+      error.value = 'Mất mạng. Bản vẽ đang được giữ trong trang này; chờ kết nối trở lại.'
+      const paused = generation
+      // Khi có mạng, lấy token mới và tải lại phòng; đổi phòng/đăng xuất sẽ hủy lần chờ này.
+      function resume() {
+        if (paused === generation) void connect(roomId)
+      }
+      window.addEventListener('online', resume, { once: true })
+      stopNetworkWatching = () => window.removeEventListener('online', resume)
+    }
+    window.addEventListener('offline', pauseForOffline)
+    stopNetworkWatching = () => window.removeEventListener('offline', pauseForOffline)
+    if (!window.navigator.onLine) {
+      pauseForOffline()
+      return
+    }
+
+    // Dùng chung backoff cho lỗi socket và lỗi tải token tạm thời; mỗi phòng chỉ có một lần thử đang hẹn.
+    function retry() {
+      if (current !== generation) return
+      clearTimeout(retryTimer)
+      clearTimeout(tokenTimer)
+      clearTimeout(watchdog)
+      previews.value = {}
+      members.value = []
+      status.value = 'reconnecting'
+      error.value = 'Kết nối bị gián đoạn. Đang chờ kết nối lại với máy chủ.'
+      const delay =
+        Math.min(30000, 1000 * 2 ** Math.min(attempt++, 5)) * (0.8 + Math.random() * 0.2)
+      retryTimer = setTimeout(open, delay)
+    }
     // Bỏ nét xem trước cũ nếu bên gửi ngắt kết nối trước khi hủy nét.
     previewTimer = setInterval(() => {
       for (const [id, preview] of Object.entries(previews.value))
@@ -141,8 +178,8 @@ export const useBoardStore = defineStore('board', () => {
                       send('auth.refresh', { token: fresh })
                   } catch {
                     if (current === generation && socket === connection) {
-                      error.value = 'Vui lòng đăng nhập lại để kết nối.'
-                      connection.close(4401)
+                      // Lỗi tải token có thể do mất mạng; server mới quyết định phiên đã hết hạn bằng 4401.
+                      connection.close(4000, 'Retry token refresh')
                     }
                   }
                 },
@@ -166,6 +203,7 @@ export const useBoardStore = defineStore('board', () => {
               room.value = message.room
               previews.value = {}
               clearTimeout(watchdog)
+              // Nét đã có trong trạng thái server được xác nhận tại chỗ; nét còn thiếu gửi lại nguyên UUID.
               const known = new Set(document.value.operations.map((operation) => operation.id))
               for (const [id, operation] of Object.entries(pending.value)) {
                 if (known.has(id)) delete pending.value[id]
@@ -175,8 +213,6 @@ export const useBoardStore = defineStore('board', () => {
               attempt = 0
               error.value = ''
             } else if (message.type === 'operation.committed') {
-              delete pending.value[message.operation.id]
-              delete previews.value[message.operation.id]
               if (message.sequence > sequence.value) {
                 if (message.sequence !== sequence.value + 1) {
                   socket?.close(4000, 'Resynchronize')
@@ -185,6 +221,9 @@ export const useBoardStore = defineStore('board', () => {
                 document.value.operations.push(message.operation)
                 sequence.value = message.sequence
               }
+              // Chỉ bỏ nét chờ sau khi xử lý đúng sequence; nếu thiếu sequence thì giữ lại đến lúc tải lại phòng.
+              delete pending.value[message.operation.id]
+              delete previews.value[message.operation.id]
             } else if (message.type === 'operation.preview') {
               previews.value[message.operation.id] = {
                 clientId: message.clientId,
@@ -229,29 +268,18 @@ export const useBoardStore = defineStore('board', () => {
         // Khi mất kết nối, dọn trạng thái tạm và thử nối lại theo thời gian chờ tăng dần.
         connection.onclose = (event) => {
           if (current !== generation || socket !== connection) return
-          clearTimeout(tokenTimer)
-          clearTimeout(watchdog)
-          previews.value = {}
-          members.value = []
           if (event.code === 4401) {
             disconnect()
             status.value = 'error'
             error.value = 'Phiên đăng nhập đã hết hạn. Đăng nhập lại rồi kết nối.'
             return
           }
-          status.value = 'reconnecting'
-          error.value = 'Kết nối bị gián đoạn. Đang chờ kết nối lại với máy chủ.'
-          const delay =
-            Math.min(30000, 1000 * 2 ** Math.min(attempt++, 5)) * (0.8 + Math.random() * 0.2)
-          // Thử mở lại cùng phòng, sau đó gửi lại nét chưa được xác nhận.
-          retryTimer = setTimeout(open, delay)
+          retry()
         }
       } catch {
         // Token của phiên cũ có thể trả lỗi sau khi đã chuyển phòng hoặc đăng xuất; bỏ qua kết quả đó.
         if (current !== generation) return
-        disconnect()
-        status.value = 'error'
-        error.value = 'Không thể xác thực kết nối. Kiểm tra mạng hoặc đăng nhập lại.'
+        retry()
       }
     }
     await open()

@@ -48,12 +48,19 @@ npm run build
 
 ### Kiểm tra Canvas và kết nối phòng
 
-Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 16 test
-dùng Node test runner: 4 test tọa độ/replay và 12 test store WebSocket với token,
+Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 24 test
+dùng Node test runner: 4 test tọa độ/replay và 20 test store WebSocket với token,
 socket, timer giả. Không cần Clerk, Supabase hoặc backend đang chạy. Các test
 kiểm tra xác thực, tải trạng thái, đổi phòng/đăng xuất, refresh token, phản hồi
-trễ, nét chờ/acknowledgement, thứ tự nét/tẩy và khóa gửi khi mất kết nối. Không
-thay thế kiểm tra hai tài khoản thật trên trình duyệt.
+trễ, nét chờ/acknowledgement, thứ tự nét/tẩy, Offline/Online và retry khi tải token
+gặp lỗi mạng. Server báo 4401 thì dừng để đăng nhập lại. Test mô phỏng không thay
+thế kiểm tra hai tài khoản thật trên trình duyệt. Trường hợp mất acknowledgement
+kiểm tra riêng nét đã/chưa lưu, giữ UUID khi retry và giữ nét chờ khi thiếu sequence.
+
+Kiểm tra thủ công: mở cùng phòng bằng hai tài khoản; ở tab A dùng F12 → Network
+→ Offline, giữ tab B Online và vẽ thêm nét. Chuyển A về No throttling/Online:
+Canvas chỉ cho vẽ sau khi tải lại trạng thái phòng, gồm các nét mới của B.
+Không F5 trong lần kiểm tra này; kết quả được theo dõi trong `../Plans.md`.
 
 ### Lint with [ESLint](https://eslint.org/)
 

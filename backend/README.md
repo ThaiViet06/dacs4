@@ -71,10 +71,13 @@ phòng, giới hạn danh sách và chống sửa dữ liệu trả về.
 SQL giả và route HTTP: quyền phát/join, hash, link cũ, tham gia lại không trùng,
 không đổi chủ phòng và rollback khi lỗi ghi.
 
-3 test trong `tests/collaboration.test.js` dùng client `ws` thật và repository
+5 test trong `tests/collaboration.test.js` dùng client `ws` thật và repository
 PostgreSQL với SQL giả: xác nhận sau COMMIT, phát cùng thứ tự, chống nét trùng,
-tải lại trạng thái và không xác nhận khi transaction lỗi. Tổng cộng **53 test
-backend**, không cần dịch vụ thật; độ bền trên Supabase/restart vẫn cần thử riêng.
+tải lại trạng thái, nhận đủ nét sau ngắt/nối lại và không xác nhận khi transaction
+lỗi. Test mất acknowledgement chủ động ngắt client khi COMMIT đang chờ; retry
+sau COMMIT giữ nguyên sequence, retry sau rollback lưu đúng một lần.
+Tổng cộng **55 test backend**, không cần dịch vụ thật; độ bền trên Supabase/restart
+vẫn cần thử riêng.
 
 `src/memory-repository.js` cung cấp `ready()`, `createRoom()`, `listRooms()` và
 `getRoom()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
@@ -118,6 +121,19 @@ npm run dev       # Chạy bằng nodemon
 npm start         # Chạy bằng Node.js
 ```
 
+## Kiểm tra khôi phục sau restart
+
+1. Mở cùng phòng bằng hai tài khoản, chờ hết nét đang chờ xác nhận.
+2. Giữ hai trang mở; tại terminal backend đang chạy, nhấn Ctrl+C rồi chạy lại
+   `npm.cmd run dev` từ `backend/`.
+3. Không F5: hai client phải tự kết nối lại và giữ đúng bản vẽ đã lưu.
+4. Vẽ thêm một nét, chờ xác nhận; tài khoản kia phải nhận được nét đó.
+
+Đối chiếu operations/sequence trước và sau bằng truy vấn chỉ đọc. Kết quả nghiệm
+thu ngày 04/11/2026 đạt: hai tài khoản tự nối lại, bản vẽ giữ nguyên và vẽ tiếp
+đồng bộ; Supabase giữ đủ 43 nét cũ, lưu thêm đúng một nét, sequence 44 và UUID
+không trùng. Chi tiết phạm vi còn lại theo [Plans.md](../Plans.md).
+
 Kiểm tra cú pháp cấu hình mà không mở máy chủ hoặc kết nối database:
 
 ```powershell
@@ -130,8 +146,10 @@ repository readiness, `/healthz` (200), `/readyz` (200), và API phòng chưa đ
 (401 `AUTH_REQUIRED`) đều đạt. Backend dừng sạch sau kiểm tra; tiến trình thử nghiệm
 không được giữ chạy. Luồng phòng HTTP bằng tài khoản thật đã được xác nhận sau đó;
 hai tài khoản thật cũng đã xác nhận WebSocket nhận trạng thái, F5 và giữ kết nối
-hơn một phút. Canvas đã được nối để gửi/nhận nét hoàn thành; vẽ/tẩy/F5 với tài
-khoản thật, lần tải JWKS riêng và khôi phục sau restart tiếp tục theo dõi trong kế hoạch.
+hơn một phút. Hai tài khoản thật đã xác nhận vẽ/tẩy/F5 và Offline/Online nhận đủ
+nét; khôi phục sau restart cũng đã xác nhận và đối chiếu Supabase chỉ đọc.
+Lần tải JWKS riêng và mất acknowledgement trên Supabase thật tiếp tục theo dõi
+trong kế hoạch.
 
 Audit ngày 2026-11-02: dependency production không có cảnh báo; audit đầy đủ còn
 2 mục moderate trong chuỗi development `nodemon → minimatch` đã tồn tại trước lần

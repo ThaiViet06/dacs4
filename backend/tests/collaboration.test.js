@@ -170,4 +170,71 @@ test("a failed transaction returns an error without acknowledging or broadcastin
   assert.equal(stored().room.sequence, 0);
   assert.equal(stored().operations.length, 0);
   for (const client of [owner, member]) assert.ok(!client.received.some((message) => message.type === "operation.committed"));
+  // Retry cùng UUID sau rollback phải lưu được đúng một lần, không coi nét chưa lưu là duplicate.
+  control.failCommit = false;
+  const closed = once(owner.socket, "close");
+  owner.socket.terminate();
+  await closed;
+  const returned = await join("owner");
+  assert.equal(returned.state.sequence, 0);
+  returned.send("operation.commit", { operation });
+  const saved = await returned.next("operation.committed");
+  assert.equal(saved.sequence, 1);
+  assert.equal(saved.duplicate, false);
+  assert.deepEqual(await member.next("operation.committed"), saved);
+  assert.equal(stored().operations.length, 1);
+});
+
+// Một client mất kết nối không cản client còn lại vẽ; khi trở lại phải nhận đủ nét đã lưu theo sequence.
+test("a disconnected member catches up and receives new strokes after rejoining", { timeout: 5000 }, async (context) => {
+  const { join } = await setup(context);
+  const owner = await join("owner");
+  const member = await join("member");
+  const closed = once(member.socket, "close");
+  member.socket.terminate();
+  await closed;
+  const operations = [stroke(), stroke("eraser")];
+  for (const operation of operations) {
+    owner.send("operation.commit", { operation });
+    await owner.next("operation.committed");
+  }
+  const returned = await join("member");
+  assert.equal(returned.state.sequence, 2);
+  assert.deepEqual(returned.state.document.operations, operations);
+  const operation = stroke();
+  owner.send("operation.commit", { operation });
+  const saved = await returned.next("operation.committed");
+  assert.equal(saved.sequence, 3);
+  assert.deepEqual(saved.operation, operation);
+});
+
+// Client mất kết nối khi transaction chưa trả ack; sau COMMIT, nối lại/retry vẫn chỉ có một nét và một sequence.
+test("disconnect before acknowledgement preserves a committed stroke and retry keeps its sequence", { timeout: 5000 }, async (context) => {
+  const { join, control, stored } = await setup(context);
+  const owner = await join("owner");
+  const member = await join("member");
+  let reached;
+  const atCommit = new Promise((resolve) => { reached = resolve; });
+  const wait = new Promise((resolve) => { control.release = resolve; });
+  control.pause = { reached, wait };
+  const operation = stroke();
+  owner.send("operation.commit", { operation });
+  await atCommit;
+  try {
+    const closed = once(owner.socket, "close");
+    owner.socket.terminate();
+    await closed;
+    assert.ok(!owner.received.some((message) => message.type === "operation.committed"));
+  } finally { control.release(); }
+  const saved = await member.next("operation.committed");
+  assert.equal(saved.sequence, 1);
+  const returned = await join("owner");
+  assert.equal(returned.state.sequence, 1);
+  assert.deepEqual(returned.state.document.operations, [operation]);
+  returned.send("operation.commit", { operation });
+  const duplicate = await returned.next("operation.committed");
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.sequence, 1);
+  assert.equal(stored().room.sequence, 1);
+  assert.equal(stored().operations.length, 1);
 });
