@@ -6,9 +6,9 @@ const { createApplication } = require("../src/application");
 const { PostgresRepository } = require("../src/repository");
 
 // Mô phỏng kết quả SQL để test repository thật; không kết nối hay sửa database của người dùng.
-function fixture(inviteToken) {
+function fixture(inviteToken, sharingEnabled = true) {
   const roomId = randomUUID();
-  const room = { id: roomId, title: "Fixture room", owner_id: "owner", sequence: 0, checkpoint: null, updated_at: "2026-11-03T00:00:00Z" };
+  const room = { id: roomId, title: "Fixture room", owner_id: "owner", sequence: 0, sharing_enabled: sharingEnabled, sharing_version: 0, checkpoint: null, updated_at: "2026-11-03T00:00:00Z" };
   const members = new Set(["owner", "member"]);
   const state = { hash: "original-hash", commits: 0, rollbacks: 0, releases: 0, failWrite: false };
   if (inviteToken) state.hash = createHash("sha256").update(inviteToken).digest("hex");
@@ -179,4 +179,45 @@ test("a failed membership write rejects invitation joining and rolls back", asyn
   assert.equal(state.commits, 0);
   assert.equal(state.rollbacks, 1);
   assert.equal(state.releases, 1);
+});
+
+// Cá nhân chỉ cho chủ đọc, kể cả khi database còn thành viên cũ; metadata không lộ version hoặc hash.
+test("private project metadata is owner-only even when a stale membership exists", async () => {
+  const { repository, roomId } = fixture(undefined, false);
+  const room = await repository.getRoom("owner", roomId);
+  assert.equal(room.sharingEnabled, false);
+  assert.ok(!Object.hasOwn(room, "sharing_version"));
+  assert.ok(!Object.hasOwn(room, "invite_hash"));
+  for (const userId of ["member", "outsider"]) {
+    await assert.rejects(repository.getRoom(userId, roomId), { status: 404, code: "ROOM_NOT_FOUND" });
+    await assert.rejects(repository.state(userId, roomId), { status: 404, code: "ROOM_NOT_FOUND" });
+  }
+});
+
+// API link cũ không được tự mở chế độ chung cho dự án Cá nhân khi chưa có thao tác bật chia sẻ.
+test("the legacy invitation endpoint cannot issue a private project link", async () => {
+  const { repository, roomId, state } = fixture(undefined, false);
+  await assert.rejects(repository.invitation("owner", roomId), { status: 409, code: "SHARING_DISABLED" });
+  assert.equal(state.hash, "original-hash");
+  assert.equal(state.commits, 0);
+  assert.equal(state.rollbacks, 1);
+});
+
+// Biết token đúng vẫn không tham gia được khi dự án riêng tư; không ghi thêm thành viên hoặc tiết lộ metadata.
+test("HTTP refuses a valid invitation token while project sharing is disabled", async (context) => {
+  const token = "p".repeat(43);
+  const { repository, roomId, members, state } = fixture(token, false);
+  const application = createApplication({ repository, verifyToken: verifyJoiningSession, origins: ["http://localhost:5173"] });
+  context.after(() => application.close());
+  application.server.listen(0, "127.0.0.1");
+  await once(application.server, "listening");
+  const baseUrl = "http://127.0.0.1:" + application.server.address().port;
+  const headers = { Authorization: "Bearer joining-session", "Content-Type": "application/json" };
+  const response = await fetch(baseUrl + "/api/rooms/join", { method: "POST", headers, body: JSON.stringify({ token }) });
+  assert.equal(response.status, 404);
+  assert.equal((await response.json()).error.code, "INVITATION_INVALID");
+  assert.deepEqual([...members], ["owner", "member"]);
+  assert.equal(state.commits, 0);
+  const metadata = await fetch(baseUrl + "/api/rooms/" + roomId, { headers });
+  assert.equal(metadata.status, 404);
 });

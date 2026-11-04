@@ -3,10 +3,9 @@ import { api } from './api'
 
 interface CreateRoomResponse {
   room: Room
-  inviteToken: string
 }
 
-// Chỉ gửi tên phòng; backend lấy chủ phòng từ token Clerk và lưu phòng/thành viên trong cùng giao dịch.
+// Tạo dự án Cá nhân; backend lấy chủ từ token Clerk và chỉ trả metadata, chưa có link chia sẻ.
 export function createRoom(title: string): Promise<CreateRoomResponse> {
   return api<CreateRoomResponse>('/rooms', 'POST', { title: title.trim() })
 }

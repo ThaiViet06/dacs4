@@ -9,13 +9,14 @@ class MemoryRepository {
   // Cho phép health check hoạt động mà không mở kết nối PostgreSQL.
   async ready() {}
 
-  // Tạo phòng đúng cấu trúc PostgreSQL và ghi nhận người tạo là thành viên đầu tiên.
+  // Tạo dự án mặc định Cá nhân như PostgreSQL và ghi nhận chủ là thành viên đầu tiên.
   async createRoom(userId, title, document = emptyDocument()) {
     const roomTitle = titleSchema(title);
     checkSize(document);
     const inviteToken = randomBytes(32).toString("base64url");
     const room = {
       id: randomUUID(), title: roomTitle, ownerId: userId,
+      sharingEnabled: false,
       sequence: 0, checkpoint: null, updatedAt: new Date(Date.now()).toISOString(),
       inviteHash: createHash("sha256").update(inviteToken).digest("hex"),
       initialDocument: structuredClone(document), members: new Set([userId]),
@@ -42,10 +43,24 @@ class MemoryRepository {
     return this.#metadata(room);
   }
 
+  // Mô phỏng quyền đổi tên của PostgreSQL cho development/test, chỉ cập nhật tên và thời gian.
+  async renameRoom(userId, roomId, title) {
+    const roomTitle = titleSchema(title);
+    const room = this.#rooms.get(roomId);
+    if (!room || !room.members.has(userId)) {
+      throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied. Join with an invitation first.");
+    }
+    if (room.ownerId !== userId) throw new AppError(403, "OWNER_REQUIRED", "Only the room owner can do that.");
+    room.title = roomTitle;
+    room.updatedAt = new Date(Date.now()).toISOString();
+    return this.#metadata(room);
+  }
+
   // Trả object mới chỉ có metadata công khai; không lộ token/hash, tài liệu hoặc tập thành viên nội bộ.
   #metadata(room) {
     return {
       id: room.id, title: room.title, ownerId: room.ownerId, sequence: room.sequence,
+      sharingEnabled: room.sharingEnabled,
       hasCheckpoint: Boolean(room.checkpoint), updatedAt: room.updatedAt,
     };
   }

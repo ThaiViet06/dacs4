@@ -27,9 +27,9 @@ async function startApplication(context) {
 }
 
 // Gửi request như frontend nhưng chỉ dùng hai token giả cục bộ; không đọc khóa hay biến môi trường thật.
-function request(baseUrl, path, token, body) {
+function request(baseUrl, path, token, body, method = body === undefined ? "GET" : "POST") {
   return fetch(baseUrl + path, {
-    method: body === undefined ? "GET" : "POST",
+    method,
     headers: { Origin: origin, Authorization: "Bearer " + token, "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -47,7 +47,9 @@ test("HTTP create, list and metadata preserve ownership between two users", asyn
   assert.equal(first.room.ownerId, "user_a");
   assert.equal(second.room.ownerId, "user_b");
   assert.equal(first.room.title, "Phòng A");
-  assert.match(first.inviteToken, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(Object.keys(first), ["room"]);
+  assert.equal(first.room.sharingEnabled, false);
+  assert.equal(second.room.sharingEnabled, false);
   const listA = await request(baseUrl, "/api/rooms", "test-session-a");
   const listB = await request(baseUrl, "/api/rooms", "test-session-b");
   assert.equal(listA.status, 200);
@@ -64,12 +66,14 @@ test("HTTP create, list and metadata preserve ownership between two users", asyn
   assert.deepEqual(await denied.json(), await missing.json());
 });
 
-// Client không được tự chỉ định chủ phòng bằng dữ liệu gửi lên để mạo danh tài khoản khác.
-test("HTTP refuses a forged owner field without creating a room", async (context) => {
+// Client không được tự chỉ định chủ hoặc chế độ chia sẻ khi tạo dự án Cá nhân.
+test("HTTP refuses forged owner and sharing fields without creating a room", async (context) => {
   const baseUrl = await startApplication(context);
-  const response = await request(baseUrl, "/api/rooms", "test-session-a", { title: "Mạo danh", ownerId: "user_b" });
-  assert.equal(response.status, 400);
-  assert.equal((await response.json()).error.code, "INVALID_INPUT");
+  for (const fields of [{ ownerId: "user_b" }, { sharingEnabled: true }, { sharing_version: 1 }]) {
+    const response = await request(baseUrl, "/api/rooms", "test-session-a", { title: "Mạo danh", ...fields });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, "INVALID_INPUT");
+  }
   const listed = await request(baseUrl, "/api/rooms", "test-session-a");
   assert.deepEqual(await listed.json(), { rooms: [] });
 });
@@ -92,4 +96,66 @@ test("HTTP readiness works with the in-memory repository", async (context) => {
   const response = await fetch(baseUrl + "/readyz");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { status: "ready" });
+});
+
+// Chủ đổi tên được, kể cả tên ở hai biên độ dài; tải metadata/danh sách sau đó phải thấy tên mới.
+test("HTTP PATCH renames a private project without changing ownership or sharing", async (context) => {
+  const baseUrl = await startApplication(context);
+  const created = await request(baseUrl, "/api/rooms", "test-session-a", { title: "Original" });
+  const { room } = await created.json();
+  const path = "/api/rooms/" + room.id;
+  for (const title of ["  Bản phác thảo mới  ", "Z", "x".repeat(100)]) {
+    const response = await request(baseUrl, path, "test-session-a", { title }, "PATCH");
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.deepEqual(Object.keys(result), ["room"]);
+    assert.deepEqual(result.room, { ...room, title: title.trim(), updatedAt: result.room.updatedAt });
+    assert.ok(Date.parse(result.room.updatedAt) >= Date.parse(room.updatedAt));
+    assert.deepEqual(await (await request(baseUrl, path, "test-session-a")).json(), result);
+    assert.deepEqual(await (await request(baseUrl, "/api/rooms", "test-session-a")).json(), { rooms: [result.room] });
+  }
+});
+
+// Chặn thiếu đăng nhập, ID/body sai và giả mạo trường khác; mọi lỗi giữ nguyên tên đã lưu.
+test("HTTP PATCH validates authentication, room ID and a title-only body", async (context) => {
+  const baseUrl = await startApplication(context);
+  const { room } = await (await request(baseUrl, "/api/rooms", "test-session-a", { title: "Original" })).json();
+  const path = "/api/rooms/" + room.id;
+  const unsigned = await fetch(baseUrl + path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Changed" }) });
+  assert.equal(unsigned.status, 401);
+  for (const body of [{ title: "   " }, { title: "x".repeat(101) }, { title: 123 }, {}, [],
+    { title: "Changed", ownerId: "user_b" }, { title: "Changed", sharingEnabled: true }]) {
+    const response = await request(baseUrl, path, "test-session-a", body, "PATCH");
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, "INVALID_INPUT");
+  }
+  assert.equal((await request(baseUrl, "/api/rooms/not-a-uuid", "test-session-a", { title: "Changed" }, "PATCH")).status, 400);
+  assert.deepEqual(await (await request(baseUrl, path, "test-session-a")).json(), { room });
+});
+
+// Người ngoài không được dò sự tồn tại hoặc sửa tên dự án chỉ nhờ biết UUID.
+test("HTTP PATCH hides private projects from outsiders just like a missing project", async (context) => {
+  const baseUrl = await startApplication(context);
+  const { room } = await (await request(baseUrl, "/api/rooms", "test-session-a", { title: "Original" })).json();
+  const denied = await request(baseUrl, "/api/rooms/" + room.id, "test-session-b", { title: "Changed" }, "PATCH");
+  const missing = await request(baseUrl, "/api/rooms/" + randomUUID(), "test-session-b", { title: "Changed" }, "PATCH");
+  assert.equal(denied.status, 404);
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await denied.json(), await missing.json());
+  assert.deepEqual(await (await request(baseUrl, "/api/rooms/" + room.id, "test-session-a")).json(), { room });
+});
+
+// Trình duyệt phải được phép gửi PATCH từ origin tin cậy; origin khác vẫn bị chặn trước xác thực.
+test("HTTP CORS permits PATCH preflight only from an allowed origin", async (context) => {
+  const baseUrl = await startApplication(context);
+  for (const allowed of [true, false]) {
+    const response = await fetch(baseUrl + "/api/rooms/" + randomUUID(), {
+      method: "OPTIONS", headers: { Origin: allowed ? origin : "https://untrusted.example", "Access-Control-Request-Method": "PATCH", "Access-Control-Request-Headers": "authorization,content-type" },
+    });
+    assert.equal(response.status, allowed ? 204 : 403);
+    if (allowed) {
+      assert.equal(response.headers.get("access-control-allow-origin"), origin);
+      assert.ok(response.headers.get("access-control-allow-methods").split(",").includes("PATCH"));
+    } else assert.equal(response.headers.get("access-control-allow-origin"), null);
+  }
 });

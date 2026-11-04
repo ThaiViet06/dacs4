@@ -111,6 +111,8 @@ function start(event: PointerEvent) {
   if (!props.enabled || !event.isPrimary || event.button !== 0 || active.value || !canvas.value)
     return
   event.preventDefault()
+  // Trả focus về Canvas để phím tắt không còn bị giữ trong ô nhập vừa chỉnh trước khi vẽ.
+  canvas.value.focus({ preventScroll: true })
   pointerId = event.pointerId
   const point = pointFrom(event)
   // Chốt màu và độ dày lúc bắt đầu để đổi điều khiển giữa chừng chỉ ảnh hưởng nét kế tiếp.
@@ -244,6 +246,7 @@ onBeforeUnmount(() => {
       :width="WIDTH"
       :height="HEIGHT"
       class="drawing-canvas"
+      tabindex="0"
       role="img"
       :aria-label="
         tool === 'eraser'

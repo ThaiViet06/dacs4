@@ -63,26 +63,30 @@ nhớ và repository giả. Chúng kiểm tra token hợp lệ/sai, phản hồi
 xác thực WebSocket, tải trạng thái sau xác thực và chặn subscribe chưa đăng nhập/
 chưa có quyền thành viên. Không cần khóa Clerk thật, Supabase hoặc chạy migration.
 
-11 test bổ sung trong `tests/memory-repository.test.js` và `tests/rooms.test.js`
+15 test bổ sung trong `tests/memory-repository.test.js` và `tests/rooms.test.js`
 kiểm tra tạo/liệt kê/đọc metadata phòng, cách ly hai tài khoản, chặn giả mạo chủ
-phòng, giới hạn danh sách và chống sửa dữ liệu trả về.
+phòng, giới hạn danh sách và chống sửa dữ liệu trả về. PATCH được kiểm tra cho
+quyền chủ, tên 1–100 ký tự, body/ID sai, tên mới khi đọc lại và CORS preflight.
 
-8 test trong `tests/invitation.test.js` kiểm tra repository PostgreSQL thật với pool
+11 test trong `tests/invitation.test.js` kiểm tra repository PostgreSQL thật với pool
 SQL giả và route HTTP: quyền phát/join, hash, link cũ, tham gia lại không trùng,
-không đổi chủ phòng và rollback khi lỗi ghi.
+không đổi chủ phòng và rollback khi lỗi ghi. Dự án Cá nhân chặn link ngay cả khi
+token đúng hoặc còn thành viên cũ; chỉ chủ được đọc metadata/trạng thái.
 
 5 test trong `tests/collaboration.test.js` dùng client `ws` thật và repository
 PostgreSQL với SQL giả: xác nhận sau COMMIT, phát cùng thứ tự, chống nét trùng,
 tải lại trạng thái, nhận đủ nét sau ngắt/nối lại và không xác nhận khi transaction
 lỗi. Test mất acknowledgement chủ động ngắt client khi COMMIT đang chờ; retry
 sau COMMIT giữ nguyên sequence, retry sau rollback lưu đúng một lần.
-Tổng cộng **55 test backend**, không cần dịch vụ thật; độ bền trên Supabase/restart
-vẫn cần thử riêng.
+4 test trong `tests/rename.test.js` dùng repository PostgreSQL với SQL giả: chủ
+đổi tên dự án Cá nhân/Chung, giữ nguyên nét/quyền/sequence, chặn thành viên và
+rollback khi UPDATE/COMMIT lỗi. Tổng cộng **66 test backend**, không cần dịch vụ thật.
 
 `src/memory-repository.js` cung cấp `ready()`, `createRoom()`, `listRooms()` và
-`getRoom()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
-danh sách chỉ chứa phòng của thành viên, mới cập nhật trước, tối đa 100 phòng.
-Token mời chỉ trả khi tạo; danh sách/metadata không chứa token hoặc hash nội bộ.
+`getRoom()`, `renameRoom()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
+dự án mới mặc định Cá nhân và danh sách tối đa 100 mục. Metadata có
+`sharingEnabled`; API tạo chỉ trả `{ room }`, không trả token. Repository tạm vẫn
+có token nội bộ cho fixture; giao diện lấy link qua luồng chia sẻ riêng.
 
 Repository này được inject vào `createApplication()` trong test. Mỗi instance có
 dữ liệu RAM riêng và mất dữ liệu khi dừng tiến trình; `server.js` hiện vẫn dùng
@@ -92,6 +96,18 @@ trò thành viên. Cách ly phòng được xác nhận bằng hai tài khoản 
 Supabase chỉ đọc: người ngoài bị từ chối, danh sách chỉ trả phòng đã tham gia,
 thành viên không trùng và chủ phòng không đổi. Các kiểm tra bổ sung còn lại theo
 [Plans.md](../Plans.md).
+
+## API đổi tên dự án
+
+`PATCH /api/rooms/:id` nhận JSON `{ "title": "Tên dự án mới" }` và Bearer token
+Clerk. Chỉ chủ được đổi tên; tên được trim rồi kiểm tra dài 1–100 ký tự, body chỉ
+được chứa `title`. Thành công trả `200 { room }` sau COMMIT, cập nhật tên/thời gian
+và giữ nguyên chủ, chế độ chia sẻ, sequence, nét vẽ, checkpoint và link.
+
+Thành viên dự án chung nhận 403, người ngoài/phòng không tồn tại nhận cùng 404;
+thiếu đăng nhập nhận 401, dữ liệu sai nhận 400, database lỗi nhận 503. CORS cho
+phép PATCH từ origin tin cậy. Bước này có API; điều khiển đổi tên trên editor sẽ
+được thêm trong Pha 5.
 
 ## Khởi tạo database
 
@@ -110,6 +126,19 @@ Script áp dụng các file trong `migrations/` theo thứ tự, lưu checksum v
 `drawing.saved_drawings` có RLS và bảng theo dõi `drawing.schema_migrations`.
 Checksum và chạy lại migration đã được kiểm tra. Không thêm schema `drawing`
 vào danh sách schema công khai của Supabase Data API.
+
+`002_project_sharing.sql` bổ sung `sharing_enabled` và `sharing_version`: các
+phòng cũ giữ trạng thái chung/version 0 và link cũ; dự án tạo sau migration mặc
+định Cá nhân. Chạy migration trước khi khởi động backend mới; readiness kiểm tra
+cả hai cột. `001_initial.sql` giữ nguyên checksum.
+
+Đã áp dụng và chạy lại ngày 04/11/2026: hai migration được ghi nhận đúng một lần,
+mặc định riêng tư/version 0 và repository readiness đạt. Đối chiếu số lượng/hash
+các bảng xác nhận 2 phòng, 4 thành viên, 44 nét không thay đổi; phòng cũ vẫn chung.
+
+Đang ở bước nền tảng: chủ vẫn đọc/vẽ dự án Cá nhân, người khác không được vào
+bằng link và nút tạo link cũ được ẩn. API bật/tắt chia sẻ là bước tiếp theo trong
+[Plans.md](../Plans.md).
 
 Chạy lệnh từ `backend/` nếu `DATABASE_CA_FILE` dùng đường dẫn tương đối. Thông tin
 đăng nhập database và CA được cấp qua cấu hình hiện có; không tắt kiểm tra TLS.

@@ -13,6 +13,7 @@ const origin = "http://localhost:5173";
 async function setup(context) {
   const roomId = randomUUID();
   let stored = { room: { id: roomId, title: "Collaboration test", owner_id: "owner", sequence: 0,
+    sharing_enabled: true, sharing_version: 0,
     initial_document: emptyDocument(), checkpoint: null }, operations: [] };
   const control = { failCommit: false, pause: null, release: null };
   const pool = {

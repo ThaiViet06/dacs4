@@ -11,11 +11,20 @@ import {
 import { getToken } from '../services/auth'
 import { WS_URL } from '../services/api'
 
-// Store giữ bản vẽ cá nhân hoặc trạng thái phòng chung, gồm cả thao tác chưa được máy chủ xác nhận.
+interface RoomSession {
+  room: Room | null
+  document: DrawingDocument
+  sequence: number
+  pending: Record<string, Operation>
+  rejected: Operation[]
+  invitationUrl: string
+}
+
+// Giữ phiên dự án theo tài khoản; bản nháp Vẽ thử nằm ở store draft riêng.
 export const useBoardStore = defineStore('board', () => {
   const document = ref<DrawingDocument>(emptyDocument())
   const room = ref<Room | null>(null)
-  const status = ref<'local' | 'connecting' | 'connected' | 'reconnecting' | 'error'>('local')
+  const status = ref<'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'>('idle')
   const error = ref('')
   const sequence = ref(0)
   const members = ref<{ clientId: string; userId: string }[]>([])
@@ -24,14 +33,11 @@ export const useBoardStore = defineStore('board', () => {
   const previews = ref<Record<string, { clientId: string; operation: Operation; seenAt: number }>>(
     {},
   )
-  // Chỉ Studio cá nhân dùng lịch sử này; thao tác phòng chung đã lưu trên máy chủ không bị xóa ngược.
-  const redoStack = ref<Operation[]>([])
+  const invitationUrl = ref('')
+  const sessions = new Map<string, RoomSession>()
+  let accountId = ''
   // Ghép thao tác đã xác nhận với nét đang chờ để người dùng thấy ngay nét vừa vẽ.
   const operations = computed(() => [...document.value.operations, ...Object.values(pending.value)])
-  // Chỉ cho hoàn tác thao tác trên bản vẽ cá nhân khi còn nét đã lưu.
-  const canUndo = computed(() => status.value === 'local' && document.value.operations.length > 0)
-  // Chỉ cho làm lại trên bản vẽ cá nhân khi còn nét trong lịch sử hoàn tác.
-  const canRedo = computed(() => status.value === 'local' && redoStack.value.length > 0)
   // Đếm nét đã gửi nhưng chưa được máy chủ xác nhận.
   const pendingCount = computed(() => Object.keys(pending.value).length)
   // Trích các nét tạm thời của người khác để hiển thị ở lớp xem trước.
@@ -71,32 +77,88 @@ export const useBoardStore = defineStore('board', () => {
     members.value = []
     previews.value = {}
   }
-  // Chuyển về trang vẽ cá nhân trống và xóa dữ liệu của phòng trước đó.
-  function local() {
-    disconnect()
+  // Xóa phần đang hiển thị, không xóa các phiên đã giữ để mở lại dự án sau.
+  function clearActive() {
     target = ''
     room.value = null
     sequence.value = 0
     pending.value = {}
     rejected.value = []
-    // Trang giấy mới bắt đầu một lịch sử riêng, không thể làm lại nét của trang cũ.
-    redoStack.value = []
+    invitationUrl.value = ''
     document.value = emptyDocument()
-    status.value = 'local'
+    status.value = 'idle'
     error.value = ''
+  }
+  // Giữ tối đa năm dự án gần nhất đã lưu; phiên còn nét chờ/lỗi không bị loại khỏi bộ nhớ.
+  function rememberRoom() {
+    if (!target) return
+    sessions.delete(target)
+    sessions.set(target, {
+      room: room.value,
+      document: document.value,
+      sequence: sequence.value,
+      pending: pending.value,
+      rejected: rejected.value,
+      invitationUrl: invitationUrl.value,
+    })
+    for (const [id, session] of sessions) {
+      if (sessions.size <= 5) break
+      if (id !== target && !Object.keys(session.pending).length && !session.rejected.length)
+        sessions.delete(id)
+    }
+  }
+  // Rời editor đóng socket nhưng giữ cả nét chưa xác nhận để gửi lại khi mở đúng dự án.
+  function leaveRoom() {
+    rememberRoom()
+    disconnect()
+    clearActive()
+  }
+  // Đăng xuất/đổi tài khoản xóa mọi dữ liệu dự án và phản hồi đang chờ của tài khoản cũ.
+  function reset() {
+    disconnect()
+    sessions.clear()
+    clearActive()
+  }
+  // Header gọi cả khi người dùng ở ngoài editor, tránh phục hồi dữ liệu của tài khoản trước.
+  function setAccount(userId: string) {
+    if (accountId === userId) return
+    accountId = userId
+    reset()
+  }
+  // Dựng lại Canvas cũ ở chế độ khóa vẽ, chờ kiểm tra quyền và room.state mới từ server.
+  function prepareRoom(roomId: string) {
+    rememberRoom()
+    disconnect()
+    clearActive()
+    target = roomId
+    const saved = sessions.get(roomId)
+    if (saved) {
+      room.value = saved.room
+      document.value = saved.document
+      sequence.value = saved.sequence
+      pending.value = saved.pending
+      rejected.value = saved.rejected
+      invitationUrl.value = saved.invitationUrl
+    }
+    status.value = 'connecting'
+    return room.value
+  }
+  // Khi server từ chối quyền, bỏ dữ liệu cache của dự án để lần mở sau không hiện nội dung cũ.
+  function forgetRoom(roomId: string) {
+    sessions.delete(roomId)
+    if (target === roomId) {
+      disconnect()
+      clearActive()
+    }
+  }
+  // Link chỉ được nhớ cho đúng dự án đang mở và đúng tài khoản chủ, không gửi lại yêu cầu tạo link.
+  function rememberInvitation(roomId: string, url: string) {
+    if (target === roomId && room.value?.ownerId === accountId) invitationUrl.value = url
   }
   // Chuẩn bị kết nối phòng; giữ nét đang chờ khi nối lại đúng phòng cũ.
   async function connect(roomId: string) {
-    disconnect()
-    redoStack.value = []
-    if (target !== roomId) {
-      pending.value = {}
-      rejected.value = []
-      document.value = emptyDocument()
-      sequence.value = 0
-      room.value = null
-    }
-    target = roomId
+    if (target !== roomId) prepareRoom(roomId)
+    else disconnect()
     attempt = 0
     error.value = ''
     const current = generation
@@ -254,7 +316,8 @@ export const useBoardStore = defineStore('board', () => {
                   ROOM_FULL: 'Phòng đã đủ 10 kết nối. Hãy thử lại sau.',
                   JOIN_REQUIRED: 'Chưa tham gia kết nối phòng. Hãy kết nối lại.',
                 }
-                disconnect()
+                if (message.code === 'ROOM_NOT_FOUND') forgetRoom(roomId)
+                else disconnect()
                 status.value = 'error'
                 error.value = reasons[message.code]!
               } else if (message.code === 'SERVICE_UNAVAILABLE' || message.code === 'RATE_LIMIT')
@@ -269,7 +332,7 @@ export const useBoardStore = defineStore('board', () => {
         connection.onclose = (event) => {
           if (current !== generation || socket !== connection) return
           if (event.code === 4401) {
-            disconnect()
+            reset()
             status.value = 'error'
             error.value = 'Phiên đăng nhập đã hết hạn. Đăng nhập lại rồi kết nối.'
             return
@@ -284,29 +347,12 @@ export const useBoardStore = defineStore('board', () => {
     }
     await open()
   }
-  // Lưu nét tại chỗ hoặc gửi nét lên phòng và chờ máy chủ xác nhận.
+  // Chỉ gửi nét khi room.state đã được xác nhận; giữ UUID trong pending đến khi nhận acknowledgement.
   function commit(operation: Operation) {
-    if (status.value === 'local') {
-      // Một nét mới sau khi hoàn tác tạo nhánh mới, nên xóa các nét có thể làm lại.
-      redoStack.value = []
-      document.value.operations.push(operation)
-    } else if (status.value === 'connected') {
+    if (status.value === 'connected') {
       pending.value[operation.id] = operation
       send('operation.commit', { operation })
     }
-  }
-  // Chuyển nét cuối cùng của trang cá nhân sang lịch sử làm lại.
-  function undoLocal() {
-    if (!canUndo.value) return
-    const operation = document.value.operations.pop()
-    if (operation) redoStack.value.push(operation)
-  }
-  // Đưa nét vừa hoàn tác trở lại bản vẽ cá nhân.
-  function redoLocal() {
-    if (!canRedo.value) return
-    // Giữ nguyên ID và thứ tự thao tác để canvas phát lại cả nét vẽ lẫn nét tẩy chính xác.
-    const operation = redoStack.value.pop()
-    if (operation) document.value.operations.push(operation)
   }
   // Gửi nét đang kéo để thành viên khác nhìn thấy trước khi nét được lưu.
   function preview(operation: Operation) {
@@ -328,17 +374,19 @@ export const useBoardStore = defineStore('board', () => {
     sequence,
     members,
     operations,
-    canUndo,
-    canRedo,
     pendingCount,
     rejected,
     remotePreviews,
-    local,
+    invitationUrl,
+    prepareRoom,
+    leaveRoom,
+    forgetRoom,
+    rememberInvitation,
+    setAccount,
+    reset,
     connect,
     disconnect,
     commit,
-    undoLocal,
-    redoLocal,
     preview,
     cancelPreview,
     exportDocument,

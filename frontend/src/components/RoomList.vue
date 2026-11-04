@@ -1,54 +1,57 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
-import { useUser } from '@clerk/vue'
+import { computed, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import { RouterLink, useRouter } from 'vue-router'
+import { SignInButton, useUser } from '@clerk/vue'
+import CreateRoomForm from './CreateRoomForm.vue'
 import type { Room } from '../drawing/model'
-import { ApiError } from '../services/api'
-import { listRooms } from '../services/rooms'
+import { useProjectsStore } from '../stores/projects'
 
-const props = defineProps<{ refreshKey: number }>()
 const { isLoaded, isSignedIn, user } = useUser()
-const rooms = ref<Room[]>([])
-const loading = ref(false)
-const error = ref('')
-let requestVersion = 0
+const router = useRouter()
+const projects = useProjectsStore()
+const { rooms, loading, hasLoaded, error, activeGroup } = storeToRefs(projects)
+const { loadRooms } = projects
+const dateFormatter = new Intl.DateTimeFormat('vi-VN', {
+  dateStyle: 'short',
+  timeStyle: 'short',
+})
+// Lọc danh sách đã tải: cá nhân chỉ gồm dự án riêng của mình, chung gồm các dự án đang chia sẻ.
+const visibleRooms = computed(() =>
+  rooms.value.filter((room) =>
+    activeGroup.value === 'personal'
+      ? room.ownerId === user.value?.id && !room.sharingEnabled
+      : room.sharingEnabled,
+  ),
+)
 
-// Tải phòng theo token hiện tại; xóa dữ liệu cũ và bỏ qua phản hồi trễ khi đổi tài khoản hoặc tải lại.
-async function loadRooms() {
-  const version = ++requestVersion
-  rooms.value = []
-  error.value = ''
-  loading.value = false
-  if (!isLoaded.value || !isSignedIn.value || !user.value) return
-
-  loading.value = true
-  try {
-    const result = await listRooms()
-    if (version === requestVersion) rooms.value = result.rooms
-  } catch (cause) {
-    if (version !== requestVersion) return
-    error.value =
-      cause instanceof ApiError && cause.status !== 401
-        ? 'Không tải được danh sách phòng. Kiểm tra kết nối rồi bấm Tải lại.'
-        : 'Không thể xác thực tài khoản. Vui lòng đăng nhập lại.'
-  } finally {
-    if (version === requestVersion) loading.value = false
-  }
+// Hiển thị ngày giờ theo trình duyệt; dữ liệu ngày không hợp lệ vẫn không làm hỏng danh sách.
+function formatUpdatedAt(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'Chưa rõ thời gian' : dateFormatter.format(date)
 }
 
-// Tự tải sau khi Clerk sẵn sàng, đổi tài khoản hoặc tạo phòng; không giữ cache qua các phiên đăng nhập.
-watch([isLoaded, isSignedIn, () => user.value?.id, () => props.refreshKey], loadRooms, {
-  immediate: true,
-})
+// Quay lại Studio giữ card và bộ lọc đã có; cập nhật ngầm bằng phiên đăng nhập hiện tại.
+watch(
+  [isLoaded, isSignedIn, () => user.value?.id],
+  () => {
+    projects.setAccount(isLoaded.value && isSignedIn.value ? (user.value?.id ?? '') : '')
+    if (isLoaded.value && isSignedIn.value) void loadRooms()
+  },
+  { immediate: true, flush: 'sync' },
+)
 
-// Phản hồi của yêu cầu đang chờ không được ghi lại dữ liệu khi người dùng đã rời trang.
-onBeforeUnmount(() => requestVersion++)
+// Lưu dự án đã được server xác nhận vào cache rồi mở editor, để quay về Studio thấy ngay thẻ mới.
+function roomCreated(room: Room) {
+  projects.addCreatedRoom(room)
+  void router.push({ name: 'studio-project', params: { id: room.id } })
+}
 </script>
 
 <template>
-  <section class="room-list-card" aria-labelledby="room-list-heading" :aria-busy="loading">
+  <section class="room-list-section" aria-labelledby="room-list-heading" :aria-busy="loading">
     <div class="room-list-heading">
-      <h2 id="room-list-heading">Phòng của bạn</h2>
+      <h2 id="room-list-heading">Dự án đã lưu</h2>
       <button
         v-if="isLoaded && isSignedIn"
         class="button button-outline"
@@ -56,40 +59,85 @@ onBeforeUnmount(() => requestVersion++)
         :disabled="loading"
         @click="loadRooms"
       >
-        Tải lại
+        {{ loading ? 'Đang cập nhật…' : 'Tải lại' }}
+      </button>
+    </div>
+    <div v-if="isLoaded && isSignedIn" class="project-filters" role="group" aria-label="Loại dự án">
+      <button
+        type="button"
+        :aria-pressed="activeGroup === 'personal'"
+        aria-controls="project-grid"
+        @click="activeGroup = 'personal'"
+      >
+        Cá nhân
+      </button>
+      <button
+        type="button"
+        :aria-pressed="activeGroup === 'shared'"
+        aria-controls="project-grid"
+        @click="activeGroup = 'shared'"
+      >
+        Chung
       </button>
     </div>
     <p v-if="!isLoaded" class="room-list-note" role="status">Đang kiểm tra tài khoản…</p>
-    <p v-else-if="!isSignedIn" class="room-list-note">Đăng nhập để xem các phòng của bạn.</p>
-    <p v-else-if="loading" class="room-list-note" role="status">Đang tải phòng…</p>
+    <div v-else-if="!isSignedIn" class="room-list-note">
+      <p>Đăng nhập để xem và tạo dự án của bạn.</p>
+      <SignInButton mode="modal">
+        <button class="button button-primary" type="button">Đăng nhập</button>
+      </SignInButton>
+    </div>
+    <p v-else-if="loading && !hasLoaded" class="room-list-note" role="status">Đang tải dự án…</p>
     <p v-else-if="error" class="room-list-error" role="alert">{{ error }}</p>
-    <p v-else-if="!rooms.length" class="room-list-note" role="status">
-      Bạn chưa có phòng nào. Tạo phòng bằng biểu mẫu bên trên.
+    <p v-else-if="!visibleRooms.length" class="room-list-note" role="status">
+      {{
+        activeGroup === 'personal'
+          ? 'Bạn chưa có dự án cá nhân. Bấm thẻ “+” để bắt đầu.'
+          : 'Chưa có dự án chung. Các dự án đang chia sẻ hoặc bạn được mời tham gia sẽ hiện tại đây.'
+      }}
     </p>
-    <ul v-else class="room-list" aria-label="Phòng đã tạo hoặc tham gia">
-      <li v-for="room in rooms" :key="room.id" class="room-list-item">
-        <h3>{{ room.title }}</h3>
-        <span class="room-role">{{ room.ownerId === user?.id ? 'Chủ phòng' : 'Thành viên' }}</span>
+    <ul
+      id="project-grid"
+      class="project-grid"
+      :aria-label="activeGroup === 'personal' ? 'Dự án cá nhân' : 'Dự án chung'"
+    >
+      <li class="project-card project-card-create">
+        <CreateRoomForm @created="roomCreated" />
+      </li>
+      <li v-for="room in visibleRooms" :key="room.id" class="project-card">
         <RouterLink
-          class="button button-outline room-open"
-          :to="{ name: 'room', params: { id: room.id } }"
-          :aria-label="`Mở phòng ${room.title}`"
-          >Mở phòng</RouterLink
+          class="project-card-link"
+          :to="{ name: 'studio-project', params: { id: room.id } }"
+          :aria-label="`Mở ${room.title} trong Studio`"
         >
+          <!-- Biểu tượng trang giấy là trang trí, không giả làm ảnh nội dung bản vẽ. -->
+          <div class="project-card-cover" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none">
+              <rect x="10" y="6" width="28" height="36" rx="4" />
+              <path d="M17 29c3-10 5-11 7-4s5 6 7-2M17 15h9" stroke-linecap="round" />
+            </svg>
+          </div>
+          <div class="project-card-content">
+            <span class="project-mode">{{ room.sharingEnabled ? 'Chung' : 'Cá nhân' }}</span>
+            <h3>{{ room.title }}</h3>
+            <span class="project-role">{{
+              room.ownerId === user?.id ? 'Chủ dự án' : 'Thành viên'
+            }}</span>
+            <time class="project-updated" :datetime="room.updatedAt">
+              Cập nhật: {{ formatUpdatedAt(room.updatedAt) }}
+            </time>
+            <span class="project-card-open">Mở bản vẽ <span aria-hidden="true">↗</span></span>
+          </div>
+        </RouterLink>
       </li>
     </ul>
   </section>
 </template>
 
 <style scoped>
-/* Danh sách chỉ hiển thị thông tin cần thiết, cùng kích thước với biểu mẫu tạo phòng. */
-.room-list-card {
-  width: min(100%, 680px);
-  margin: 24px auto 0;
-  padding: clamp(22px, 4vw, 36px);
-  border: 1px solid #e4e9e2;
-  border-radius: 18px;
-  background: white;
+/* Lưới dùng hết chiều rộng Studio và tự xuống hàng trên màn hình nhỏ. */
+.room-list-section {
+  margin-top: 32px;
 }
 .room-list-heading {
   display: flex;
@@ -106,6 +154,28 @@ h2 {
   min-height: 44px;
   padding: 10px 14px;
   flex-shrink: 0;
+}
+.project-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+.project-filters button {
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 1px solid #d9e1dc;
+  border-radius: 10px;
+  background: white;
+  color: #677584;
+  font-size: 14px;
+  font-weight: 700;
+}
+.project-filters button:hover,
+.project-filters button[aria-pressed='true'] {
+  border-color: #a8b99e;
+  background: #e8f0e0;
+  color: #526c4d;
 }
 .button:disabled {
   cursor: wait;
@@ -124,37 +194,86 @@ h2 {
 .room-list-error {
   color: #9b473c;
 }
-.room-list {
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+  gap: 20px;
   list-style: none;
-  margin: 20px 0 0;
+  margin: 24px 0 0;
   padding: 0;
 }
-.room-list-item {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 16px 0;
-  border-top: 1px solid #e4e9e2;
+.project-card {
+  min-width: 0;
+  border: 1px solid #e0e7db;
+  border-radius: 16px;
+  background: white;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
-.room-list-item h3 {
+.project-card:hover,
+.project-card:focus-within {
+  border-color: #91a77f;
+  box-shadow: 0 8px 24px #526c4d10;
+}
+.project-card-create {
+  border: 1px dashed #a8b99e;
+  background: #f0f5eb;
+}
+.project-card-link {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: inherit;
+}
+.project-card-cover {
+  display: grid;
+  place-items: center;
+  min-height: 130px;
+  border-radius: 16px 16px 0 0;
+  background: #f1f4ed;
+  color: #8a9f7b;
+}
+.project-card-cover svg {
+  width: 48px;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+.project-card-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 20px;
+}
+.project-card h3 {
   min-width: 0;
   margin: 0;
-  font-size: 17px;
+  font-size: 20px;
   overflow-wrap: anywhere;
-  flex: 1 1 180px;
 }
-.room-role {
-  padding: 6px 10px;
-  border-radius: 8px;
+.project-mode {
+  padding: 4px 8px;
+  border-radius: 6px;
   color: #526c4d;
   background: #f5f8f2;
   font-size: 12px;
 }
-.room-open {
-  min-height: 44px;
-  padding: 10px 14px;
-  flex-shrink: 0;
+.project-role,
+.project-updated {
+  color: #77827b;
+  font-size: 12px;
+}
+.project-card-open {
+  display: flex;
+  justify-content: space-between;
+  align-self: stretch;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 8px;
+  color: #526c4d;
+  font-size: 13px;
+  font-weight: 700;
 }
 </style>

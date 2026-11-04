@@ -44,7 +44,7 @@ async function acceptInvitation() {
     const result = await joinRoom(token.value)
     if (version !== requestVersion) return
     // Thay trang lời mời trong lịch sử để nút Quay lại không lặp thao tác tham gia.
-    await router.replace({ name: 'room', params: { id: result.room.id } })
+    await router.replace({ name: 'studio-project', params: { id: result.room.id } })
   } catch (cause) {
     if (version !== requestVersion) return
     if (cause instanceof ApiError && (cause.status === 400 || cause.status === 404)) {
@@ -65,7 +65,7 @@ async function acceptInvitation() {
 <template>
   <section class="placeholder-page page-container">
     <div class="breadcrumb">
-      <RouterLink to="/gallery">Bộ sưu tập</RouterLink><span>/</span><span>Lời mời</span>
+      <RouterLink to="/studio">Studio</RouterLink><span>/</span><span>Lời mời</span>
     </div>
     <div class="placeholder-card invite-card" :aria-busy="joining">
       <span class="placeholder-illustration" aria-hidden="true">✉</span>
@@ -101,7 +101,7 @@ async function acceptInvitation() {
           {{ joining ? 'Đang tham gia…' : 'Tham gia phòng' }}
         </button>
       </div>
-      <RouterLink class="text-link invite-back" to="/gallery">Về bộ sưu tập</RouterLink>
+      <RouterLink class="text-link invite-back" to="/studio">Về Studio</RouterLink>
     </div>
   </section>
 </template>

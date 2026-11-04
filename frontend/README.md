@@ -48,9 +48,10 @@ npm run build
 
 ### Kiểm tra Canvas và kết nối phòng
 
-Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 24 test
-dùng Node test runner: 4 test tọa độ/replay và 20 test store WebSocket với token,
-socket, timer giả. Không cần Clerk, Supabase hoặc backend đang chạy. Các test
+Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 50 test
+dùng Node test runner: 4 test tọa độ/replay, 26 WebSocket/cache editor, 2 bản nháp,
+11 Studio/lifecycle/routing và 7 cache danh sách. Dùng dịch vụ giả khi cần;
+không cần Clerk, Supabase hoặc backend đang chạy. Các test
 kiểm tra xác thực, tải trạng thái, đổi phòng/đăng xuất, refresh token, phản hồi
 trễ, nét chờ/acknowledgement, thứ tự nét/tẩy, Offline/Online và retry khi tải token
 gặp lỗi mạng. Server báo 4401 thì dừng để đăng nhập lại. Test mô phỏng không thay
@@ -61,6 +62,48 @@ Kiểm tra thủ công: mở cùng phòng bằng hai tài khoản; ở tab A dù
 → Offline, giữ tab B Online và vẽ thêm nét. Chuyển A về No throttling/Online:
 Canvas chỉ cho vẽ sau khi tải lại trạng thái phòng, gồm các nét mới của B.
 Không F5 trong lần kiểm tra này; kết quả được theo dõi trong `../Plans.md`.
+
+### Editor Studio dùng chung
+
+| Đường dẫn | Chức năng |
+| --- | --- |
+| `/studio` | Lưới Cá nhân/Chung, ngày cập nhật và thẻ “+” tạo mới (`StudioView`) |
+| `/studio/try` | Bản nháp không lưu, có undo/redo/reset (`DraftView`) |
+| `/studio/:id` | Dự án tự lưu, tải quyền/metadata/kết nối (`ProjectView`) |
+
+`/gallery` và `/rooms/:id` cũ chỉ chuyển hướng, giữ query/hash. Các editor dùng
+chung `StudioEditor.vue`. Ctrl+Z hoàn tác; Ctrl+Y hoặc Ctrl+Shift+Z làm lại trên
+bản nháp, kể cả sau khi chỉnh cỡ bút/màu. Ô nhập văn bản giữ phím tắt riêng.
+Dự án tự lưu chưa hỗ trợ undo/redo; giao diện báo rõ giới hạn này.
+
+Store `draft.ts` giữ bản nháp và undo/redo độc lập với `board.ts`. Đi qua Trang chủ,
+Studio hoặc dự án đã lưu không xóa bản nháp; Tạo trang mới chỉ xóa bản nháp đó.
+`board.ts` giữ phiên theo dự án/tài khoản: khi quay lại, Canvas cũ hiện nhưng khóa
+vẽ đến khi HTTP kiểm tra quyền và WebSocket trả trạng thái mới. Rời editor đóng
+socket, giữ nét chờ để mở lại cùng dự án thì retry UUID cũ, tránh trùng khi ACK mất.
+
+Cache giữ tối đa năm phiên hoàn tất gần nhất; phiên còn nét chờ/lỗi không bị loại.
+Link chia sẻ đã tạo giữ cùng phiên nên chuyển trang không cần tạo link mới.
+F5/đóng tab xóa RAM (gồm bản nháp/nét chưa xác nhận/link đang nhớ); nét đã được
+server xác nhận vẫn nằm trong database. Link ổn định qua F5/restart thuộc kế hoạch API chia sẻ.
+
+Thẻ dự án mở editor khi bấm. Dialog tạo kiểm tra tên, chặn gửi trùng và có Hủy/Esc.
+Server xác nhận tạo thành công thì mở ngay `/studio/:id` theo ID trả về;
+quay về Studio hiện ngay card trong cache và cập nhật ngầm. Lỗi hoặc phản hồi trễ sau khi đăng xuất/rời
+trang không chuyển sang editor. Chrome với SDK/API/WebSocket giả đã kiểm tra
+luồng này, Canvas, lỗi và bố cục 390px. Người dùng đã xác nhận tạo/mở/vẽ/F5 bằng tài khoản thật.
+
+Cá nhân gồm dự án riêng do bạn sở hữu; Chung gồm dự án đang chia sẻ của bạn
+hoặc được mời tham gia. Đổi mục lọc dữ liệu đã tải; Tải lại giữ mục đang chọn.
+Pinia giữ card và mục đang chọn khi chuyển Trang chủ/Studio. Cache nằm trong RAM,
+F5 tải lại danh sách. Tải nền lỗi vẫn giữ card; đăng xuất/đổi tài khoản ở bất kỳ
+trang nào hoặc API báo lỗi xác thực sẽ xóa cache. Dự án vừa tạo được thêm ngay,
+phản hồi GET cũ không ghi đè thẻ mới. Thời gian cập nhật hiển thị theo trình duyệt.
+
+Chrome đã kiểm tra phím tắt/focus, chuyển trang, giữ bản nháp và link cũ. Test
+Vue kiểm tra lifecycle, khóa công cụ, quyền/dialog, bỏ metadata trễ. Bộ lọc/ngày
+cập nhật, cache theo tài khoản và phục hồi editor đã kiểm tra Chrome bằng dữ liệu giả;
+bật/tắt chia sẻ còn trong `../Plans.md`.
 
 ### Lint with [ESLint](https://eslint.org/)
 

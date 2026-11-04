@@ -13,10 +13,11 @@ test("creating a room returns its owner, initial metadata and a private invitati
   assert.equal(room.title, "Phòng phác thảo");
   assert.equal(room.ownerId, "user_a");
   assert.equal(room.sequence, 0);
+  assert.equal(room.sharingEnabled, false);
   assert.equal(room.hasCheckpoint, false);
   assert.ok(Number.isFinite(Date.parse(room.updatedAt)));
   assert.deepEqual(joinSchema({ token: inviteToken }), { token: inviteToken });
-  assert.deepEqual(Object.keys(room).sort(), ["hasCheckpoint", "id", "ownerId", "sequence", "title", "updatedAt"]);
+  assert.deepEqual(Object.keys(room).sort(), ["hasCheckpoint", "id", "ownerId", "sequence", "sharingEnabled", "title", "updatedAt"]);
   assert.deepEqual(await repository.getRoom("user_a", room.id), room);
 });
 

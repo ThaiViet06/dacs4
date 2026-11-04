@@ -1,10 +1,25 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { SignInButton, UserButton, useUser } from '@clerk/vue'
+import { useProjectsStore } from '../stores/projects'
+import { useBoardStore } from '../stores/board'
 
 // SDK tự cập nhật trạng thái khi tải phiên, đăng nhập hoặc đăng xuất từ menu tài khoản.
 const { isLoaded, isSignedIn, user } = useUser()
+const projects = useProjectsStore()
+const board = useBoardStore()
 const connectionDelayed = ref(false)
+
+// Nhóm tài khoản luôn có trên header nên cache được xóa cả khi đăng xuất ngoài trang Studio.
+watch(
+  [isLoaded, isSignedIn, () => user.value?.id],
+  () => {
+    const accountId = isLoaded.value && isSignedIn.value ? (user.value?.id ?? '') : ''
+    projects.setAccount(accountId)
+    board.setAccount(accountId)
+  },
+  { immediate: true, flush: 'sync' },
+)
 
 // Sau 15 giây chưa tải được phiên, báo kết nối chậm để người dùng có thể tiếp tục dùng Studio.
 const loadingTimer = setTimeout(() => {

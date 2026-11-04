@@ -22,7 +22,7 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
     if (req.headers.origin && !origins.includes(req.headers.origin)) return next(new AppError(403, "ORIGIN_DENIED", "This origin is not allowed."));
     next();
   });
-  app.use(cors({ origin: origins, allowedHeaders: ["Content-Type", "Authorization"], methods: ["GET", "POST", "PUT", "OPTIONS"] }));
+  app.use(cors({ origin: origins, allowedHeaders: ["Content-Type", "Authorization"], methods: ["GET", "POST", "PUT", "PATCH", "OPTIONS"] }));
   app.use(express.json({ limit: "16kb" }));
   app.get("/healthz", (req, res) => res.status(stopping ? 503 : 200).json({ status: stopping ? "stopping" : "ok" }));
   app.get("/readyz", async (req, res, next) => {
@@ -52,13 +52,22 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
   app.get("/api/rooms", route(async (req, res) => res.json({ rooms: await repository.listRooms(req.userId) })));
   app.post("/api/rooms", route(async (req, res) => {
     const { title } = parse(createSchema, req.body);
-    res.status(201).json(await repository.createRoom(req.userId, title));
+    // Dự án mới riêng tư: trả metadata, link chỉ lấy qua luồng chia sẻ của chủ dự án.
+    const { room } = await repository.createRoom(req.userId, title);
+    res.status(201).json({ room });
   }));
   app.post("/api/rooms/join", route(async (req, res) => {
     const { token } = parse(joinSchema, req.body);
     res.json({ room: await repository.joinRoom(req.userId, token) });
   }));
   app.get("/api/rooms/:id", route(async (req, res) => res.json({ room: await repository.getRoom(req.userId, id(req)) })));
+  // Đổi tên theo danh tính Clerk; dùng cùng hàng đợi với nét vẽ để giữ thứ tự cập nhật của dự án.
+  app.patch("/api/rooms/:id", route(async (req, res) => {
+    const roomId = id(req);
+    const { title } = parse(createSchema, req.body);
+    const room = await queue.run(roomId, () => repository.renameRoom(req.userId, roomId, title));
+    res.json({ room });
+  }));
   app.post("/api/rooms/:id/invitation", route(async (req, res) => res.json(await repository.invitation(req.userId, id(req)))));
   for (const [path, checkpoint] of [["checkpoint", true], ["copies", false]]) {
     app[checkpoint ? "put" : "post"](`/api/rooms/:id/${path}`, route(async (req, res) => {

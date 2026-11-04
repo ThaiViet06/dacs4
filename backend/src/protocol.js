@@ -42,7 +42,7 @@ function titleSchema(value) {
   ensure(typeof value === "string" && value.trim().length > 0 && value.trim().length <= 100);
   return value.trim();
 }
-// Kiểm tra dữ liệu tạo phòng chỉ gồm tiêu đề hợp lệ.
+// Dữ liệu tạo hoặc đổi tên dự án chỉ được có một trường title hợp lệ.
 function createSchema(value) { object(value, ["title"]); return { title: titleSchema(value.title) }; }
 // Kiểm tra token trong yêu cầu tham gia phòng.
 function joinSchema(value) {

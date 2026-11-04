@@ -1,20 +1,20 @@
 const { randomUUID, randomBytes, createHash } = require("node:crypto");
 const { AppError } = require("./errors");
-const { emptyDocument, checkSize } = require("./protocol");
+const { emptyDocument, checkSize, titleSchema } = require("./protocol");
 // Băm token lời mời để database không lưu token có thể dùng trực tiếp.
 const hash = (token) => createHash("sha256").update(token).digest("hex");
 // Tạo token lời mời ngẫu nhiên để chia sẻ liên kết vào phòng.
 const token = () => randomBytes(32).toString("base64url");
-// Chuyển tên cột PostgreSQL sang dữ liệu phòng trả cho frontend.
+// Chuyển tên cột PostgreSQL sang metadata; chỉ công bố trạng thái chia sẻ, không lộ hash/version nội bộ.
 function metadata(row) {
   return { id: row.id, title: row.title, ownerId: row.owner_id, sequence: row.sequence,
-    hasCheckpoint: Boolean(row.checkpoint), updatedAt: row.updated_at };
+    sharingEnabled: Boolean(row.sharing_enabled), hasCheckpoint: Boolean(row.checkpoint), updatedAt: row.updated_at };
 }
 class PostgresRepository {
   // Giữ pool dùng chung cho các câu truy vấn của repository.
   constructor(pool) { this.pool = pool; }
-  // Kiểm tra bảng phòng đã tồn tại và database sẵn sàng.
-  async ready() { await this.pool.query("SELECT id FROM drawing.rooms LIMIT 0"); }
+  // Kiểm tra cả cột chế độ dự án để không phục vụ API với schema chưa chạy migration mới.
+  async ready() { await this.pool.query("SELECT id,sharing_enabled,sharing_version FROM drawing.rooms LIMIT 0"); }
   // Chạy nhiều câu truy vấn trong một giao dịch; lỗi thì hoàn tác toàn bộ.
   async transaction(action) {
     const client = await this.pool.connect();
@@ -29,14 +29,14 @@ class PostgresRepository {
       throw error;
     } finally { client.release(); }
   }
-  // Kiểm tra quyền thành viên và tùy chọn khóa hàng phòng khi ghi.
+  // Kiểm tra thành viên/chủ dự án Cá nhân, tùy chọn khóa hàng khi ghi; dùng chung cho HTTP và WebSocket.
   async member(client, userId, roomId, lock = true) {
     const { rows: [room] } = await client.query(`SELECT * FROM drawing.rooms WHERE id=$1${lock ? " FOR UPDATE" : ""}`, [roomId]);
     const { rows } = await client.query("SELECT user_id FROM drawing.room_members WHERE room_id=$1 AND user_id=$2", [roomId, userId]);
-    if (!room || !rows.length) throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied. Join with an invitation first.");
+    if (!room || !rows.length || (!room.sharing_enabled && room.owner_id !== userId)) throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied. Join with an invitation first.");
     return room;
   }
-  // Tạo phòng, token mời và thêm người tạo làm thành viên trong cùng giao dịch.
+  // Tạo dự án theo mặc định Cá nhân của database và thêm chủ làm thành viên trong cùng giao dịch.
   async createRoom(userId, title, document = emptyDocument()) {
     checkSize(document);
     const id = randomUUID();
@@ -49,28 +49,39 @@ class PostgresRepository {
     });
     return { room, inviteToken };
   }
-  // Liệt kê tối đa 100 phòng người dùng đã tham gia, mới cập nhật trước.
+  // Chỉ liệt kê dự án cá nhân của chủ hoặc dự án chung đã tham gia, tối đa 100 mục mới cập nhật trước.
   async listRooms(userId) {
-    const { rows } = await this.pool.query("SELECT r.* FROM drawing.rooms r JOIN drawing.room_members m ON m.room_id=r.id WHERE m.user_id=$1 ORDER BY r.updated_at DESC LIMIT 100", [userId]);
+    const { rows } = await this.pool.query("SELECT r.* FROM drawing.rooms r JOIN drawing.room_members m ON m.room_id=r.id WHERE m.user_id=$1 AND (r.owner_id=$1 OR r.sharing_enabled) ORDER BY r.updated_at DESC LIMIT 100", [userId]);
     return rows.map(metadata);
   }
-  // Kiểm tra token mời rồi thêm thành viên; tham gia lại không tạo bản ghi trùng.
+  // Kiểm tra token và chế độ chia sẻ trước khi thêm thành viên; tham gia lại không tạo bản ghi trùng.
   async joinRoom(userId, inviteToken) {
     return this.transaction(async (client) => {
       const { rows: [row] } = await client.query("SELECT * FROM drawing.rooms WHERE invite_hash=$1 FOR UPDATE", [hash(inviteToken)]);
-      if (!row) throw new AppError(404, "INVITATION_INVALID", "This invitation is invalid or has been replaced.");
+      if (!row || !row.sharing_enabled) throw new AppError(404, "INVITATION_INVALID", "This invitation is invalid or has been replaced.");
       await client.query("INSERT INTO drawing.room_members(room_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [row.id, userId]);
       return metadata(row);
     });
   }
   // Chỉ trả thông tin phòng cho thành viên đã có quyền truy cập.
   async getRoom(userId, roomId) { return metadata(await this.member(this.pool, userId, roomId, false)); }
-  // Thay token lời mời cũ sau khi xác nhận người gọi là chủ phòng.
+  // Chỉ chủ được đổi tên; khóa hàng và commit trước khi trả metadata, giữ nguyên nét và chế độ chia sẻ.
+  async renameRoom(userId, roomId, title) {
+    const roomTitle = titleSchema(title);
+    return this.transaction(async (client) => {
+      const room = await this.member(client, userId, roomId);
+      this.owner(room, userId);
+      const { rows: [updated] } = await client.query("UPDATE drawing.rooms SET title=$2,updated_at=now() WHERE id=$1 RETURNING *", [roomId, roomTitle]);
+      return metadata(updated);
+    });
+  }
+  // Link cũ chỉ được thay khi chủ đang ở chế độ chung; dự án Cá nhân chờ API bật chia sẻ riêng.
   async invitation(userId, roomId) {
     const inviteToken = token();
     await this.transaction(async (client) => {
       const room = await this.member(client, userId, roomId);
       this.owner(room, userId);
+      if (!room.sharing_enabled) throw new AppError(409, "SHARING_DISABLED", "Enable sharing before creating an invitation.");
       await client.query("UPDATE drawing.rooms SET invite_hash=$2 WHERE id=$1", [roomId, hash(inviteToken)]);
     });
     return { inviteToken };

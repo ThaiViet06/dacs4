@@ -84,7 +84,7 @@ function setup(context, getToken = async () => 'test-session') {
   )
   setActivePinia(createPinia())
   const board = module.exports.useBoardStore()
-  context.after(() => board.local())
+  context.after(() => board.reset())
   return { board, sockets, timers, network }
 }
 
@@ -189,12 +189,12 @@ test('sign-out cleanup closes the socket and discards room data and pending toke
   sockets[0].open()
   sockets[0].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
   sockets[0].receive(roomState())
-  board.local()
+  board.reset()
   assert.equal(sockets[0].readyState, 3)
   assert.equal(timers.size, 0)
   assert.equal(board.room, null)
   assert.equal(board.document.operations.length, 0)
-  assert.equal(board.status, 'local')
+  assert.equal(board.status, 'idle')
 })
 
 test('state for another room is rejected and cannot enable drawing', async (context) => {
@@ -434,12 +434,12 @@ test('leaving an offline room cancels its online listener and prevents reconnect
   sockets[0].receive(roomState())
   network.navigator.onLine = false
   network.dispatchEvent(new Event('offline'))
-  board.local()
+  board.reset()
   network.navigator.onLine = true
   network.dispatchEvent(new Event('online'))
   await new Promise(setImmediate)
   assert.equal(sockets.length, 1)
-  assert.equal(board.status, 'local')
+  assert.equal(board.status, 'idle')
   assert.equal(board.room, null)
   assert.equal(board.document.operations.length, 0)
 })
@@ -528,4 +528,136 @@ test('a sequence gap keeps the pending stroke until authoritative state confirms
   assert.equal(board.sequence, 2)
   assert.deepEqual(board.document.operations, [remote, operation])
   assert.ok(!sockets[1].sent.some(({ type }) => type === 'operation.commit'))
+})
+
+// Chuyển trang rồi quay lại cũng phải đối chiếu UUID như reconnect, kể cả acknowledgement đã thất lạc.
+for (const saved of [false, true]) {
+  test(`room navigation retains a pending stroke ${saved ? 'saved' : 'not saved'} by the server`, async (context) => {
+    const { board, sockets, timers } = setup(context)
+    await board.connect(roomId)
+    sockets[0].open()
+    sockets[0].receive({ ...roomState(), document: model.emptyDocument() })
+    const operation = roomState().document.operations[0]
+    board.commit(operation)
+    const lateMessage = sockets[0].onmessage
+    board.leaveRoom()
+    assert.equal(sockets[0].readyState, 3)
+    assert.equal(timers.size, 0)
+    board.prepareRoom(otherRoomId)
+    assert.equal(board.operations.length, 0)
+    board.leaveRoom()
+    board.prepareRoom(roomId)
+    assert.equal(board.status, 'connecting')
+    assert.deepEqual(board.operations, [operation])
+    assert.equal(board.pendingCount, 1)
+    lateMessage({
+      data: JSON.stringify({ v: 1, type: 'operation.committed', operation, sequence: 1 }),
+    })
+    assert.equal(board.pendingCount, 1)
+    await board.connect(roomId)
+    sockets[1].open()
+    sockets[1].receive({
+      ...roomState(),
+      sequence: saved ? 1 : 0,
+      document: { ...model.emptyDocument(), operations: saved ? [operation] : [] },
+    })
+    const retries = sockets[1].sent.filter(({ type }) => type === 'operation.commit')
+    assert.equal(retries.length, saved ? 0 : 1)
+    if (!saved) {
+      assert.deepEqual(retries[0].operation, operation)
+      sockets[1].receive({ type: 'operation.committed', operation, sequence: 1 })
+    }
+    assert.equal(board.pendingCount, 0)
+    assert.deepEqual(board.operations, [operation])
+  })
+}
+
+test('cached rooms stay isolated and cannot draw before fresh room state', async (context) => {
+  const { board, sockets } = setup(context)
+  await board.connect(roomId)
+  sockets[0].open()
+  const original = roomState()
+  sockets[0].receive(original)
+  board.leaveRoom()
+  await board.connect(otherRoomId)
+  sockets[1].open()
+  sockets[1].receive(roomState(otherRoomId))
+  board.leaveRoom()
+  assert.equal(board.prepareRoom(roomId).id, roomId)
+  assert.deepEqual(board.document, original.document)
+  board.commit(roomState().document.operations[0])
+  assert.equal(board.pendingCount, 0)
+  await board.connect(roomId)
+  sockets[2].open()
+  assert.notEqual(board.status, 'connected')
+  const remote = roomState().document.operations[0]
+  sockets[2].receive({
+    ...original,
+    sequence: 1,
+    document: { ...original.document, operations: [...original.document.operations, remote] },
+  })
+  assert.equal(board.status, 'connected')
+  assert.deepEqual(board.document.operations, [...original.document.operations, remote])
+})
+
+test('invitation and room caches are private to the current account', async (context) => {
+  const { board, sockets } = setup(context)
+  board.setAccount('test-owner')
+  await board.connect(roomId)
+  sockets[0].open()
+  sockets[0].receive(roomState())
+  board.rememberInvitation(roomId, 'https://test.invalid/invite/placeholder')
+  board.leaveRoom()
+  board.prepareRoom(roomId)
+  assert.equal(board.invitationUrl, 'https://test.invalid/invite/placeholder')
+  board.rememberInvitation(otherRoomId, 'https://test.invalid/invite/wrong-room')
+  assert.equal(board.invitationUrl, 'https://test.invalid/invite/placeholder')
+  board.leaveRoom()
+  board.setAccount('another-user')
+  assert.equal(board.prepareRoom(roomId), null)
+  assert.equal(board.invitationUrl, '')
+  assert.equal(board.document.operations.length, 0)
+  board.room = { ...roomState().room }
+  board.rememberInvitation(roomId, 'https://test.invalid/invite/not-owner')
+  assert.equal(board.invitationUrl, '')
+})
+
+test('revoked access deletes cached room state instead of restoring it later', async (context) => {
+  const { board, sockets } = setup(context)
+  await board.connect(roomId)
+  sockets[0].open()
+  sockets[0].receive(roomState())
+  board.leaveRoom()
+  board.prepareRoom(roomId)
+  await board.connect(roomId)
+  sockets[1].open()
+  sockets[1].receive({ type: 'error', code: 'ROOM_NOT_FOUND', message: 'Access denied' })
+  assert.equal(board.status, 'error')
+  assert.equal(board.document.operations.length, 0)
+  board.leaveRoom()
+  assert.equal(board.prepareRoom(roomId), null)
+})
+
+test('cache eviction preserves projects that still have unacknowledged work', async (context) => {
+  const { board, sockets } = setup(context)
+  await board.connect(roomId)
+  sockets[0].open()
+  sockets[0].receive(roomState())
+  const pending = roomState().document.operations[0]
+  board.commit(pending)
+  board.leaveRoom()
+  for (let index = 0; index < 7; index++) {
+    const id = `finished-${index}`
+    board.prepareRoom(id)
+    board.room = { ...roomState().room, id }
+    board.document = roomState().document
+    board.leaveRoom()
+  }
+  board.prepareRoom(roomId)
+  assert.equal(board.pendingCount, 1)
+  assert.ok(board.operations.some(({ id }) => id === pending.id))
+  board.leaveRoom()
+  assert.equal(board.prepareRoom('finished-0'), null)
+  board.leaveRoom()
+  assert.equal(board.prepareRoom('finished-6').id, 'finished-6')
 })
