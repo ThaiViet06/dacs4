@@ -1,6 +1,6 @@
 const { randomUUID, randomBytes, createHash } = require("node:crypto");
 const { AppError } = require("./errors");
-const { emptyDocument, checkSize, titleSchema } = require("./protocol");
+const { emptyDocument, checkSize, titleSchema, eventSchema, normalizeDocument } = require("./protocol");
 const { sharingChange } = require("./sharing");
 // Băm token lời mời để database không lưu token có thể dùng trực tiếp.
 const hash = (token) => createHash("sha256").update(token).digest("hex");
@@ -141,11 +141,13 @@ class PostgresRepository {
   owner(room, userId) {
     if (room.owner_id !== userId) throw new AppError(403, "OWNER_REQUIRED", "Only the room owner can do that.");
   }
-  // Ghép tài liệu ban đầu với các thao tác đã lưu đến số thứ tự cần lấy.
+  // Ghép lịch sử đến sequence cần đọc; giữ v1 cho nét cũ, trả v2 khi có sự kiện ẩn/hiện.
   async document(client, room, sequence = room.sequence) {
     if (sequence > room.sequence) throw new AppError(409, "SEQUENCE_AHEAD", "Wait for drawing synchronization before saving.");
     const { rows } = await client.query("SELECT payload FROM drawing.room_operations WHERE room_id=$1 AND sequence<=$2 ORDER BY sequence", [room.id, sequence]);
-    return { ...room.initial_document, operations: [...room.initial_document.operations, ...rows.map((row) => row.payload)] };
+    const document = { ...room.initial_document, operations: [...room.initial_document.operations, ...rows.map((row) => row.payload)] };
+    if (document.version === 1 && document.operations.some((event) => event.type === "visibility")) document.version = 2;
+    return document.version === 1 ? document : normalizeDocument(document);
   }
   // Đọc trạng thái phòng nhất quán để gửi cho thành viên mới vào hoặc nối lại.
   async state(userId, roomId) {
@@ -154,23 +156,29 @@ class PostgresRepository {
       return { room: metadata(room), sequence: room.sequence, document: await this.document(client, room) };
     });
   }
-  // Ghi nét cùng số thứ tự trong giao dịch; gửi lại cùng ID trả kết quả cũ.
+  // Ghi nét hoặc ẩn/hiện cùng sequence trong transaction; chỉ trả kết quả sau COMMIT, retry giữ UUID cũ.
   async commit(userId, roomId, operation) {
+    eventSchema(operation);
     return this.transaction(async (client) => {
       const room = await this.member(client, userId, roomId);
+      if (operation.type === "visibility") this.owner(room, userId);
       const { rows: [existing] } = await client.query("SELECT sequence,payload,author_id FROM drawing.room_operations WHERE room_id=$1 AND operation_id=$2", [roomId, operation.id]);
       if (existing) {
         if (existing.author_id !== userId || JSON.stringify(existing.payload) !== JSON.stringify(operation)) {
-          // JSONB key ordering differs: compare semantically with PostgreSQL.
+          // JSONB có thể đổi thứ tự khóa; so sánh giá trị bằng PostgreSQL để retry không bị coi nhầm là xung đột.
           const { rows: [equal] } = await client.query("SELECT payload=$3::jsonb AS equal FROM drawing.room_operations WHERE room_id=$1 AND operation_id=$2", [roomId, operation.id, JSON.stringify(operation)]);
           if (existing.author_id !== userId || !equal.equal) throw new AppError(409, "OPERATION_CONFLICT", "An operation with that ID already exists.");
         }
         return { sequence: existing.sequence, operation: existing.payload, duplicate: true };
       }
-      if (room.initial_document.operations.some((item) => item.id === operation.id)) throw new AppError(409, "OPERATION_CONFLICT", "An operation with that ID already exists.");
+      // Chủ vẫn được nhận lại xác nhận của sự kiện đã lưu sau khi bật chia sẻ; chỉ chặn sự kiện mới ở chế độ Chung.
+      if (operation.type === "visibility" && room.sharing_enabled) throw new AppError(409, "PERSONAL_MODE_REQUIRED", "Switch to personal mode before undoing or redoing a stroke.");
+      if (room.initial_document.operations.some((item) => item.id.toLowerCase() === operation.id.toLowerCase())) throw new AppError(409, "OPERATION_CONFLICT", "An operation with that ID already exists.");
       const document = await this.document(client, room);
       document.operations.push(operation);
-      checkSize(document);
+      if (operation.type === "visibility") document.version = 2;
+      if (document.version === 2) normalizeDocument(document);
+      else checkSize(document);
       const sequence = room.sequence + 1;
       await client.query("INSERT INTO drawing.room_operations(room_id,operation_id,sequence,author_id,payload) VALUES($1,$2,$3,$4,$5)", [roomId, operation.id, sequence, userId, JSON.stringify(operation)]);
       await client.query("UPDATE drawing.rooms SET sequence=$2,updated_at=now() WHERE id=$1", [roomId, sequence]);

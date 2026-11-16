@@ -37,6 +37,33 @@ function operationSchema(value) {
   }
   return value;
 }
+// Kiểm tra sự kiện v2: nét dùng quy tắc cũ, còn ẩn/hiện chỉ nhận UUID đích và boolean rõ ràng.
+function eventSchema(value) {
+  if (value?.type !== "visibility") return operationSchema(value);
+  object(value, ["id", "type", "targetId", "visible"]);
+  uuidSchema(value.id); uuidSchema(value.targetId);
+  ensure(typeof value.visible === "boolean" && value.id.toLowerCase() !== value.targetId.toLowerCase());
+  return value;
+}
+// Đọc v1/v2 thành bản v2 độc lập; chặn ID trùng và chỉ cho ẩn/hiện nét đã xuất hiện trước đó.
+function normalizeDocument(value) {
+  object(value, ["version", "width", "height", "operations"]);
+  ensure((value.version === 1 || value.version === 2) && value.width === WIDTH && value.height === HEIGHT);
+  ensure(Array.isArray(value.operations));
+  checkSize(value);
+  const ids = new Set();
+  const strokes = new Set();
+  for (const event of value.operations) {
+    if (value.version === 1) operationSchema(event);
+    else eventSchema(event);
+    const id = event.id.toLowerCase();
+    ensure(!ids.has(id));
+    ids.add(id);
+    if (event.type === "visibility") ensure(strokes.has(event.targetId.toLowerCase()));
+    else strokes.add(id);
+  }
+  return { version: 2, width: WIDTH, height: HEIGHT, operations: structuredClone(value.operations) };
+}
 // Loại khoảng trắng thừa và kiểm tra độ dài tên phòng hoặc bản lưu.
 function titleSchema(value) {
   ensure(typeof value === "string" && value.trim().length > 0 && value.trim().length <= 100);
@@ -94,4 +121,4 @@ function parse(schema, value) {
 function checkSize(document) {
   if (Buffer.byteLength(JSON.stringify(document)) > MAX_DOCUMENT_BYTES) throw new AppError(413, "DOCUMENT_FULL", "This board reached its 5 MiB limit. Start a new room.");
 }
-module.exports = { WIDTH, HEIGHT, MAX_DOCUMENT_BYTES, operationSchema, messageSchema, titleSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema, emptyDocument, parse, checkSize };
+module.exports = { WIDTH, HEIGHT, MAX_DOCUMENT_BYTES, operationSchema, eventSchema, normalizeDocument, messageSchema, titleSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema, emptyDocument, parse, checkSize };

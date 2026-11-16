@@ -19,6 +19,19 @@ export interface DrawingDocument {
   height: number
   operations: Operation[]
 }
+export interface VisibilityEvent {
+  id: string
+  type: 'visibility'
+  targetId: string
+  visible: boolean
+}
+export type DrawingEvent = Operation | VisibilityEvent
+export interface DrawingDocumentV2 {
+  version: 2
+  width: number
+  height: number
+  operations: DrawingEvent[]
+}
 export interface Room {
   id: string
   title: string
@@ -41,6 +54,46 @@ export const emptyDocument = (): DrawingDocument => ({
   height: HEIGHT,
   operations: [],
 })
+
+// Sao chép tài liệu đã được backend kiểm tra sang v2, giữ UUID/hình học/lịch sử và không sửa dữ liệu gốc.
+export function normalizeDocument(
+  document: DrawingDocument | DrawingDocumentV2,
+): DrawingDocumentV2 {
+  if (
+    (document.version !== 1 && document.version !== 2) ||
+    document.width !== WIDTH ||
+    document.height !== HEIGHT ||
+    !Array.isArray(document.operations)
+  ) {
+    throw new Error('Unsupported drawing document.')
+  }
+  return {
+    version: 2,
+    width: document.width,
+    height: document.height,
+    operations: document.operations.map((operation) => {
+      if (operation.type === 'visibility') return { ...operation }
+      if ('points' in operation) {
+        return { ...operation, points: operation.points.map((point) => ({ ...point })) }
+      }
+      return { ...operation, start: { ...operation.start }, end: { ...operation.end } }
+    }),
+  }
+}
+
+// Lấy các nét có trạng thái cuối là hiện; nét được làm lại vẫn nằm ở thứ tự vẽ ban đầu, kể cả nét tẩy.
+export function getVisibleOperations(document: DrawingDocument | DrawingDocumentV2): Operation[] {
+  const events: DrawingEvent[] = document.operations
+  const visibility = new Map<string, boolean>()
+  for (const event of events) {
+    if (event.type === 'visibility') visibility.set(event.targetId.toLowerCase(), event.visible)
+  }
+  return events.filter(
+    (event): event is Operation =>
+      event.type !== 'visibility' && visibility.get(event.id.toLowerCase()) !== false,
+  )
+}
+
 // Đổi tọa độ màn hình thành tọa độ bản vẽ, giới hạn trong khung và làm tròn hai chữ số.
 export function coordinates(
   x: number,

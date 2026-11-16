@@ -48,9 +48,9 @@ npm run build
 
 ### Kiểm tra Canvas và kết nối phòng
 
-Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 76 test
+Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 82 test
 dùng Node test runner: 4 test tọa độ/replay, 27 WebSocket/cache editor, 2 bản nháp,
-25 Studio/lifecycle/routing/đổi tên/chia sẻ, 10 cache danh sách và 8 lời mời.
+25 Studio/lifecycle/routing/đổi tên/chia sẻ, 10 cache danh sách, 8 lời mời và 6 tài liệu v1/v2.
 Dùng dịch vụ giả khi cần;
 không cần Clerk, Supabase hoặc backend đang chạy. Các test
 kiểm tra xác thực, tải trạng thái, đổi phòng/đăng xuất, refresh token, phản hồi
@@ -63,6 +63,12 @@ Kiểm tra thủ công: mở cùng phòng bằng hai tài khoản; ở tab A dù
 → Offline, giữ tab B Online và vẽ thêm nét. Chuyển A về No throttling/Online:
 Canvas chỉ cho vẽ sau khi tải lại trạng thái phòng, gồm các nét mới của B.
 Không F5 trong lần kiểm tra này; kết quả được theo dõi trong `../Plans.md`.
+
+Model đã có `DrawingDocumentV2` và sự kiện `visibility` tham chiếu UUID nét gốc.
+`normalizeDocument()` sao chép dữ liệu v1/v2 sang v2, giữ hình học/lịch sử và dùng
+được với Pinia/Vue reactive. `getVisibleOperations()` lấy các nét đang hiện theo
+thứ tự ban đầu, kể cả khi làm lại nét tẩy. Đây là helpers chuẩn bị; store,
+WebSocket và phím tắt dự án chưa nối v2. Backend chịu trách nhiệm kiểm tra dữ liệu.
 
 ### Editor Studio dùng chung
 
@@ -113,7 +119,8 @@ backend. Nếu chưa đăng nhập, trang chờ Clerk rồi tự tiếp tục sa
 còn nút Tham gia phòng. Link sai/hết hiệu lực báo lỗi, lỗi kết nối có Thử lại và
 không tự lặp request. Đổi tài khoản/link hoặc rời trang bỏ phản hồi cũ, request
 đang chờ không nhận thêm lần bấm trùng. Test/Chrome với SDK/API/ws giả đạt cho
-desktop/390px; luồng đăng nhập thật còn chờ trong `../Plans.md`.
+desktop/390px. Ngày 16/11/2026, người dùng xác nhận bằng hai tài khoản thật:
+đăng nhập xong hoặc mở link khi đã đăng nhập đều tự vào đúng Canvas và vẽ đồng bộ.
 
 Thẻ dự án mở editor khi bấm. Dialog tạo kiểm tra tên, chặn gửi trùng và có Hủy/Esc.
 Server xác nhận tạo thành công thì mở ngay `/studio/:id` theo ID trả về;
@@ -133,8 +140,11 @@ Vue kiểm tra lifecycle, khóa công cụ, quyền/dialog, bỏ metadata trễ.
 cập nhật, cache theo tài khoản và phục hồi editor đã kiểm tra Chrome bằng dữ liệu giả;
 bật/tắt/copy/F5/thu quyền và 390px cũng đã kiểm tra bằng dịch vụ giả. Người dùng
 đã xác nhận hai tài khoản thật: copy/F5 giữ link, tham gia/vẽ, tắt chia sẻ đưa thành
-viên về Studio kèm thông báo, chặn link cũ và giữ bản vẽ chủ. Restart backend và
-bật lại sau thu quyền còn chờ trong `../Plans.md`.
+viên về Studio kèm thông báo, chặn link cũ và giữ bản vẽ chủ. Ngày 16/11/2026,
+hai tài khoản xác nhận restart backend vẫn giữ link/bản vẽ và vẽ đồng bộ được.
+Hai tài khoản cũng xác nhận tắt/bật lại: thành viên bị thu quyền, URL editor/link
+cũ bị chặn; link mới cho tham gia lại, giữ nét và vẽ đồng bộ. Các kiểm tra còn lại
+theo `../Plans.md`.
 
 ### Lint with [ESLint](https://eslint.org/)
 

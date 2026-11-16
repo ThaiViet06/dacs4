@@ -98,7 +98,12 @@ không thay dữ liệu. 6 test trong `tests/share-token.test.js` kiểm tra HMA
 đổi UUID/version/khóa, định dạng token và cấu hình khóa an toàn. 16 test trong
 `tests/sharing-toggle.test.js` dùng SQL giả/HTTP/client ws thật kiểm tra bật/tắt,
 retry/link qua tạo lại repository, quyền, rollback, thu quyền socket và nâng link
-cũ có xác nhận, giữ thành viên đang vẽ. Tổng cộng **94 test backend**, không cần dịch vụ thật.
+cũ có xác nhận, giữ thành viên đang vẽ. 9 test trong `tests/document.test.js` kiểm
+tra chuyển v1/v2, lịch sử ẩn/hiện, UUID trùng/đích sai, giới hạn hình học/5 MiB và
+giữ giao thức hiện tại. 17 test trong `tests/visibility.test.js` dùng repository
+thật với SQL giả có khóa hàng/transaction: lưu/tải lịch sử, quyền chủ/Cá nhân,
+retry/JSONB, sequence, rollback và đổi chế độ đồng thời. Tổng cộng **120 test
+backend**, không cần dịch vụ thật.
 
 `src/memory-repository.js` cung cấp `ready()`, `createRoom()`, `listRooms()` và
 `getRoom()`, `renameRoom()`, `getSharing()`, `setSharing()`, `upgradeInvitation()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
@@ -114,6 +119,28 @@ trò thành viên. Cách ly phòng được xác nhận bằng hai tài khoản 
 Supabase chỉ đọc: người ngoài bị từ chối, danh sách chỉ trả phòng đã tham gia,
 thành viên không trùng và chủ phòng không đổi. Các kiểm tra bổ sung còn lại theo
 [Plans.md](../Plans.md).
+
+## Nền tảng tài liệu v2
+
+`src/protocol.js` có `eventSchema()` kiểm tra nét hoặc sự kiện
+`{ id, type: 'visibility', targetId, visible }`. `normalizeDocument()` đọc v1/v2,
+trả bản v2 độc lập, giữ UUID/hình học/thứ tự và toàn bộ lịch sử. ID phải duy nhất;
+sự kiện chỉ ẩn/hiện một nét xuất hiện trước đó, không tham chiếu sự kiện khác.
+Giới hạn canvas, hình học và 5 MiB vẫn áp dụng.
+
+`PostgresRepository.commit()` đã ghi sự kiện vào `room_operations.payload` cùng
+sequence trong transaction hiện có, chỉ trả kết quả sau COMMIT. Sự kiện mới yêu
+cầu chủ dự án Cá nhân; retry đúng UUID/payload trả sequence cũ, không thêm bản ghi.
+JSONB được so sánh theo giá trị thay vì thứ tự khóa. Khi đã bật chia sẻ, chủ vẫn
+nhận lại xác nhận của sự kiện cũ, còn sự kiện ẩn/hiện mới bị chặn.
+
+`document()` ghép lịch sử theo sequence, giữ v1 khi chỉ có nét cũ và trả v2 khi
+có ẩn/hiện; giữ cả nét gốc và các sự kiện, không xóa dữ liệu để hoàn tác.
+Tải một mốc sequence chỉ lấy lịch sử đến mốc đó. Không cần migration vì payload
+đã là JSONB. Đã kiểm tra bằng SQL giả, chưa ghi sự kiện vào Supabase thật.
+
+WebSocket hiện vẫn chạy v1 và chặn sự kiện ẩn/hiện; nối transport/frontend v2 rồi
+phím tắt dự án là các bước tiếp theo trong [Plans.md](../Plans.md).
 
 ## API đổi tên dự án
 
@@ -172,7 +199,12 @@ dự án thiếu cùng 404. Thiếu khóa hoặc khóa không khớp link HMAC h
 Lỗi UPDATE/DELETE/COMMIT rollback cả quyền/link và không ngắt socket.
 Đã test với SQL giả. Người dùng xác nhận bật/tắt qua UI bằng hai tài khoản thật:
 thành viên về Studio kèm thông báo, link cũ bị chặn, nét của chủ giữ nguyên.
-Lần nghiệm thu này chưa đối chiếu SQL trực tiếp hoặc thử restart với link HMAC.
+Ngày 16/11/2026, đối chiếu chỉ đọc trước/sau restart local xác nhận link HMAC
+khớp hash Supabase, sequence và số lượng 66 nét không đổi. Hai tài khoản thật
+xác nhận F5 giữ link/bản vẽ, dùng lại link và vẽ đồng bộ được. Hai tài khoản cũng
+nghiệm thu tắt/bật lại: link mới khác link cũ, URL editor/link cũ bị chặn trước khi
+tham gia lại; link mới cho mở Canvas, giữ nét và vẽ đồng bộ. Không thay khóa chia
+sẻ trong các lần kiểm tra này.
 
 ## Cập nhật link cũ sang HMAC
 
@@ -188,8 +220,9 @@ sai nhận 400, thiếu/hết phiên 401, thành viên 403, người ngoài/phò
 dự án Cá nhân 409; thiếu khóa hoặc lỗi ghi nhận 503 và giữ link cũ.
 Đã kiểm tra bằng SQL giả/client ws thật và Chrome giả. Người dùng xác nhận bằng
 hai tài khoản thật: hủy rồi cập nhật, F5 giữ đúng link/bản vẽ và thành viên vẫn vẽ
-tiếp mà không cần tham gia lại. Restart với link HMAC và thử link cũ/mới bằng
-người chưa tham gia còn chờ nghiệm thu; chưa đối chiếu SQL trực tiếp cho lần này.
+tiếp mà không cần tham gia lại. Link HMAC đã được xác nhận qua restart local
+ngày 16/11/2026; thử link cũ/mới sau nâng cấp bằng người chưa tham gia còn chờ.
+Luồng nâng link chưa được đối chiếu SQL trực tiếp trong lần nghiệm thu đó.
 
 ## Khởi tạo database
 
@@ -221,8 +254,11 @@ các bảng xác nhận 2 phòng, 4 thành viên, 44 nét không thay đổi; ph
 Chủ đọc/vẽ dự án Cá nhân và bật chia sẻ qua UI; người khác chỉ tham gia khi chia sẻ
 đang bật. GET/PATCH và luồng thu quyền đã được người dùng xác nhận; chuyển link
 cũ sang HMAC đã được người dùng nghiệm thu. Frontend tự gọi API join sau khi
-Clerk sẵn sàng, không đổi kiểm tra token/chế độ/thành viên của backend; luồng tự
-tham gia đã test bằng dịch vụ giả, chờ nghiệm thu thật trong [Plans.md](../Plans.md).
+Clerk sẵn sàng, không đổi kiểm tra token/chế độ/thành viên của backend. Ngày
+16/11/2026, người dùng xác nhận bằng hai tài khoản thật: đăng nhập xong hoặc mở
+link khi đã đăng nhập đều tự vào đúng Canvas và vẽ đồng bộ. Link HMAC qua restart
+local và bật lại sau thu quyền đã nghiệm thu; các kiểm tra còn lại theo
+[Plans.md](../Plans.md).
 
 Chạy lệnh từ `backend/` nếu `DATABASE_CA_FILE` dùng đường dẫn tương đối. Thông tin
 đăng nhập database và CA được cấp qua cấu hình hiện có; không tắt kiểm tra TLS.
