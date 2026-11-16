@@ -108,12 +108,15 @@ test("v2 documents retain the serialized 5 MiB limit", () => {
   assert.throws(() => normalizeDocument(document), { status: 413, code: "DOCUMENT_FULL" });
 });
 
-test("preparatory v2 helpers do not enable visibility commits on the existing WebSocket protocol", () => {
+test("v2 accepts visibility commits but rejects visibility previews and unsupported protocol versions", () => {
   const event = visibility(randomUUID(), false);
-  for (const v of [1, 2]) {
+  assert.deepEqual(messageSchema({ v: 2, type: "operation.commit", operation: event }).operation, event);
+  assert.throws(() => messageSchema({ v: 2, type: "operation.preview", operation: event }),
+    { status: 400, code: "INVALID_INPUT" });
+  for (const v of [1, 3]) {
     assert.throws(() => messageSchema({ v, type: "operation.commit", operation: event }),
       { status: 400, code: "INVALID_INPUT" });
   }
   const stroke = legacyDocument().operations[0];
-  assert.deepEqual(messageSchema({ v: 1, type: "operation.commit", operation: stroke }).operation, stroke);
+  assert.deepEqual(messageSchema({ v: 2, type: "operation.commit", operation: stroke }).operation, stroke);
 });

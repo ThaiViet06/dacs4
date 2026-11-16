@@ -85,11 +85,22 @@ SQL giả và route HTTP: quyền phát/join, hash, link cũ, tham gia lại kh�
 không đổi chủ phòng và rollback khi lỗi ghi. Dự án Cá nhân chặn link ngay cả khi
 token đúng hoặc còn thành viên cũ; chỉ chủ được đọc metadata/trạng thái.
 
-5 test trong `tests/collaboration.test.js` dùng client `ws` thật và repository
+14 test trong `tests/collaboration.test.js` dùng client `ws` thật và repository
 PostgreSQL với SQL giả: xác nhận sau COMMIT, phát cùng thứ tự, chống nét trùng,
 tải lại trạng thái, nhận đủ nét sau ngắt/nối lại và không xác nhận khi transaction
 lỗi. Test mất acknowledgement chủ động ngắt client khi COMMIT đang chờ; retry
-sau COMMIT giữ nguyên sequence, retry sau rollback lưu đúng một lần.
+sau COMMIT giữ nguyên sequence, retry sau rollback lưu đúng một lần. V2 kiểm tra
+ẩn/hiện qua COMMIT/reload/mất ACK, quyền Cá nhân và chặn preview sự kiện lịch sử.
+
+Test đợt lỗi ghi giữ lại bản vẽ đã lưu, rollback hai nét mới và không phát xác
+nhận cho cộng tác viên. Sau phục hồi, mỗi UUID được ghi đúng một lần; gửi trùng
+trả sequence cũ. Lỗi COMMIT được điều khiển bằng SQL giả, không phải sự cố thật
+trên Supabase.
+
+Giới hạn 10 socket/dự án được kiểm tra bằng hai tài khoản giả: chặn kết nối thứ
+11 và thao tác ghi của nó, hai lượt vào đồng thời tranh chỗ cuối, tham gia lại
+không chiếm thêm chỗ. Đóng socket giải phóng chỗ; kết nối mới nhận đủ nét trước
+khi vẽ tiếp. Các test dùng SQL giả, không đánh giá tải/độ trễ Supabase thực tế.
 4 test trong `tests/rename.test.js` dùng repository PostgreSQL với SQL giả: chủ
 đổi tên dự án Cá nhân/Chung, giữ nguyên nét/quyền/sequence, chặn thành viên và
 rollback khi UPDATE/COMMIT lỗi. 6 test trong `tests/sharing.test.js` kiểm tra GET
@@ -100,9 +111,9 @@ không thay dữ liệu. 6 test trong `tests/share-token.test.js` kiểm tra HMA
 retry/link qua tạo lại repository, quyền, rollback, thu quyền socket và nâng link
 cũ có xác nhận, giữ thành viên đang vẽ. 9 test trong `tests/document.test.js` kiểm
 tra chuyển v1/v2, lịch sử ẩn/hiện, UUID trùng/đích sai, giới hạn hình học/5 MiB và
-giữ giao thức hiện tại. 17 test trong `tests/visibility.test.js` dùng repository
+schema WebSocket v2. 17 test trong `tests/visibility.test.js` dùng repository
 thật với SQL giả có khóa hàng/transaction: lưu/tải lịch sử, quyền chủ/Cá nhân,
-retry/JSONB, sequence, rollback và đổi chế độ đồng thời. Tổng cộng **120 test
+retry/JSONB, sequence, rollback và đổi chế độ đồng thời. Tổng cộng **125 test
 backend**, không cần dịch vụ thật.
 
 `src/memory-repository.js` cung cấp `ready()`, `createRoom()`, `listRooms()` và
@@ -137,10 +148,26 @@ nhận lại xác nhận của sự kiện cũ, còn sự kiện ẩn/hiện m�
 `document()` ghép lịch sử theo sequence, giữ v1 khi chỉ có nét cũ và trả v2 khi
 có ẩn/hiện; giữ cả nét gốc và các sự kiện, không xóa dữ liệu để hoàn tác.
 Tải một mốc sequence chỉ lấy lịch sử đến mốc đó. Không cần migration vì payload
-đã là JSONB. Đã kiểm tra bằng SQL giả, chưa ghi sự kiện vào Supabase thật.
+đã là JSONB. Đã kiểm tra bằng SQL giả và đối chiếu Supabase thật ngày 16/11/2026:
+dự án `hi` sau undo/redo/F5 có sequence 5 (2 nét/3 visibility), hiện 1 nét. Người
+dùng restart backend rồi vẽ/undo tiếp: sequence 7 (3 nét/4 visibility), vẫn hiện
+1 nét; đối chiếu đầy đủ lịch sử qua sequence 5 không đổi. Các truy vấn kiểm tra
+chỉ đọc; thao tác ghi do người dùng thực hiện qua giao diện.
 
-WebSocket hiện vẫn chạy v1 và chặn sự kiện ẩn/hiện; nối transport/frontend v2 rồi
-phím tắt dự án là các bước tiếp theo trong [Plans.md](../Plans.md).
+WebSocket dùng v2 cho auth/join/commit/phản hồi; payload tài liệu vẫn có thể là
+v1 hoặc v2. Commit nhận nét hoặc ẩn/hiện, preview chỉ nhận nét. Schema lỗi giữ
+operation ID để client xử lý thao tác chờ; sự kiện lịch sử không phát preview.
+Repository kiểm tra quyền và chỉ trả thành công sau COMMIT; UUID lặp chỉ xác nhận
+cho người gửi. Frontend đã có store/Canvas v2 và nút/phím undo/redo cho chủ Cá
+nhân, cập nhật stack sau ACK. Người dùng đã nghiệm thu F5/restart và vẽ/undo tiếp
+trên dự án Cá nhân; các kiểm tra quyền/ghép luồng còn lại theo [Plans.md](../Plans.md).
+
+Chạy backend và frontend cùng bản sau cập nhật; protocol v1 không còn được nhận,
+dữ liệu v1 trong database vẫn đọc được. Local đã xác nhận health/readiness 200
+và phản hồi v2 `AUTH_REQUIRED` cho socket chưa đăng nhập. Ngày 16/11/2026, hai tài
+khoản thật xác nhận vẽ/hình/tẩy đồng bộ, F5 giữ nét/vẽ tiếp và Offline/Online tự
+nối lại nhận đủ nét. Visibility/undo/redo/F5/restart cũng đã được nghiệm thu trên
+Supabase thật; kết quả và phạm vi còn lại theo [Plans.md](../Plans.md).
 
 ## API đổi tên dự án
 

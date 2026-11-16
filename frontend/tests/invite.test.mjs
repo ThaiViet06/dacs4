@@ -18,9 +18,18 @@ const compiled = ts.transpileModule(compileScript(descriptor, { id: 'invite-test
 
 class ApiError extends Error {
   // Giả lập lỗi API công khai; chi tiết dịch vụ không được đưa thẳng vào giao diện.
-  constructor(status) {
+  constructor(status, code) {
     super('Private fixture detail')
     this.status = status
+    this.code =
+      code ??
+      {
+        400: 'INVALID_INPUT',
+        404: 'INVITATION_INVALID',
+        401: 'AUTH_EXPIRED',
+        429: 'RATE_LIMIT',
+        503: 'SERVICE_UNAVAILABLE',
+      }[status]
   }
 }
 
@@ -134,6 +143,7 @@ test('unsigned visitors, missing auth configuration and malformed links never ca
     { signed: false, userId: null },
     { userId: null },
     { configured: false },
+    { token: '' },
     { token: 'short' },
     { token: '/'.repeat(43) },
     { token: ['A'.repeat(43)] },
@@ -195,6 +205,10 @@ test('invalid, expired and service failures show safe errors without an automati
     assert.notEqual(state.error.value, '')
     assert.doesNotMatch(state.error.value, /Private/)
     assert.deepEqual(redirects, [])
+    assert.equal(
+      state.recovery.value,
+      [400, 404].includes(status) ? 'new-link' : [401, null].includes(status) ? 'sign-in' : 'retry',
+    )
     session.user.value = { id: 'member', fullName: 'Same account' }
     await nextTick()
     assert.equal(requests.length, 1)
@@ -202,16 +216,66 @@ test('invalid, expired and service failures show safe errors without an automati
   }
 })
 
-test('manual retry after a transient join failure remains idempotent and blocks duplicate clicks', async (context) => {
-  const { state, requests, redirects } = setup(context)
-  requests[0].reject(new ApiError(503))
+// Server đã xác nhận link hỏng thì không có thao tác thử lại cùng token; chưa cấp quyền hay mở Canvas.
+test('a confirmed invalid invitation cannot resend the same link', async (context) => {
+  for (const status of [400, 404]) {
+    const { state, requests, redirects } = setup(context)
+    requests[0].reject(new ApiError(status))
+    await nextTick()
+    assert.equal(state.recovery.value, 'new-link')
+    assert.match(state.error.value, /xin link mới/)
+    await state.acceptInvitation()
+    await state.acceptInvitation()
+    assert.equal(requests.length, 1)
+    assert.equal(state.joining.value, false)
+    assert.deepEqual(redirects, [])
+  }
+})
+
+// Nhận link mới phải bỏ khóa của link cũ và chỉ chuyển vào dự án sau khi server xác nhận.
+test('a new invitation recovers from a permanently invalid previous link', async (context) => {
+  const { state, route, requests, redirects } = setup(context)
+  requests[0].reject(new ApiError(404))
   await nextTick()
-  const retry = state.acceptInvitation()
-  await state.acceptInvitation()
-  assert.equal(requests.length, 2)
+  route.params.token = 'B'.repeat(43)
+  assert.equal(state.recovery.value, 'retry')
   assert.equal(state.error.value, '')
+  assert.equal(state.joining.value, true)
+  assert.equal(requests.length, 2)
+  assert.deepEqual(redirects, [])
+  requests[1].resolve({ room: { id: 'newly-shared-project' } })
+  await nextTick()
+  assert.deepEqual(redirects, [{ name: 'studio-project', params: { id: 'newly-shared-project' } }])
+})
+
+// HTML/404 từ máy chủ trung gian chưa chứng minh link sai, nên vẫn cho thử lại sau lỗi dịch vụ.
+test('an unavailable non-JSON endpoint does not permanently invalidate the invitation', async (context) => {
+  const { state, requests, redirects } = setup(context)
+  requests[0].reject(new ApiError(404, 'SERVICE_UNAVAILABLE'))
+  await nextTick()
+  assert.equal(state.recovery.value, 'retry')
+  assert.doesNotMatch(state.error.value, /xin link mới/)
+  const retry = state.acceptInvitation()
+  assert.equal(requests.length, 2)
   assert.equal(requests[0].token, requests[1].token)
   requests[1].resolve({ room: { id: 'recovered-project' } })
   await retry
   assert.deepEqual(redirects, [{ name: 'studio-project', params: { id: 'recovered-project' } }])
+})
+
+test('manual retry after a transient join failure remains idempotent and blocks duplicate clicks', async (context) => {
+  for (const status of [401, 503]) {
+    const { state, requests, redirects } = setup(context)
+    requests[0].reject(new ApiError(status))
+    await nextTick()
+    const retry = state.acceptInvitation()
+    await state.acceptInvitation()
+    assert.equal(requests.length, 2)
+    assert.equal(state.error.value, '')
+    assert.equal(state.recovery.value, 'retry')
+    assert.equal(requests[0].token, requests[1].token)
+    requests[1].resolve({ room: { id: 'recovered-project' } })
+    await retry
+    assert.deepEqual(redirects, [{ name: 'studio-project', params: { id: 'recovered-project' } }])
+  }
 })

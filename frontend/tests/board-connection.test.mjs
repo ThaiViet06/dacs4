@@ -14,6 +14,9 @@ const compiled = ts.transpileModule(source, {
 const roomId = '00000000-0000-4000-8000-000000000001'
 const otherRoomId = '00000000-0000-4000-8000-000000000002'
 
+// Kiểu lỗi này chỉ biểu thị SDK xác nhận không có phiên, không dùng cho lỗi mạng tạm thời.
+class SignInRequiredError extends Error {}
+
 // Chạy store thật với socket/token/timer giả để kiểm tra thứ tự và phản hồi trễ mà không gọi dịch vụ.
 function setup(context, getToken = async () => 'test-session') {
   const sockets = []
@@ -46,7 +49,7 @@ function setup(context, getToken = async () => 'test-session') {
     }
     // Giao phản hồi giả qua đúng handler mà store đã đăng ký.
     receive(message) {
-      this.onmessage?.({ data: JSON.stringify({ v: 1, ...message }) })
+      this.onmessage?.({ data: JSON.stringify({ v: 2, ...message }) })
     }
     // Mô phỏng đóng kết nối; handler bị tháo thì không được tự nối lại.
     close(code = 1000) {
@@ -56,7 +59,7 @@ function setup(context, getToken = async () => 'test-session') {
   }
   const dependencies = {
     '../drawing/model': model,
-    '../services/auth': { getToken },
+    '../services/auth': { getToken, SignInRequiredError },
     '../services/api': { WS_URL: 'ws://test.invalid/ws' },
   }
   const module = { exports: {} }
@@ -106,6 +109,436 @@ function roomState(id = roomId) {
   }
 }
 
+// Kết nối một dự án với tài khoản/chế độ cụ thể để kiểm tra sự kiện lịch sử trên store thật.
+async function connectedProject(context, { accountId = 'test-owner', shared = false } = {}) {
+  const session = setup(context)
+  session.board.setAccount(accountId)
+  await session.board.connect(roomId)
+  const socket = session.sockets[0]
+  socket.open()
+  socket.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+  const state = roomState()
+  state.room.sharingEnabled = shared
+  socket.receive(state)
+  return { ...session, socket, state }
+}
+
+// Dùng UUID riêng cho mỗi lần ẩn/hiện, giữ UUID nét làm đích xuyên qua reconnect và cache.
+function visibility(targetId, visible = false) {
+  return { id: crypto.randomUUID(), type: 'visibility', targetId, visible }
+}
+
+// Tạo một nét mới trong phiên, độc lập với nét cũ đã có khi tải phòng.
+function newStroke(state, type = 'line') {
+  const original = state.document.operations[0]
+  return type === 'eraser'
+    ? {
+        id: crypto.randomUUID(),
+        type,
+        width: original.width,
+        color: original.color,
+        points: [original.start, original.end],
+      }
+    : { ...original, id: crypto.randomUUID() }
+}
+
+// Cho server giả xác nhận thao tác cuối ở sequence tiếp theo, không tự cập nhật stack trong test.
+function acknowledgeLast(board, socket) {
+  const message = socket.sent.at(-1)
+  assert.equal(message.type, 'operation.commit')
+  socket.receive({
+    type: 'operation.committed',
+    sequence: board.sequence + 1,
+    operation: message.operation,
+  })
+  return message.operation
+}
+
+test('personal undo and redo move through new strokes and erasing only after acknowledgement', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+  const first = newStroke(state)
+  const erased = newStroke(state, 'eraser')
+  for (const operation of [first, erased]) {
+    board.commit(operation)
+    assert.equal(board.canUndo, false)
+    acknowledgeLast(board, socket)
+  }
+  assert.equal(board.canUndo, true)
+  board.undo()
+  const hidden = socket.sent.at(-1).operation
+  assert.equal(hidden.targetId, erased.id)
+  assert.equal(hidden.visible, false)
+  assert.equal(board.canRedo, false)
+  board.undo()
+  assert.equal(socket.sent.at(-1).operation.id, hidden.id)
+  acknowledgeLast(board, socket)
+  socket.receive({
+    type: 'operation.committed',
+    sequence: board.sequence,
+    operation: hidden,
+    duplicate: true,
+  })
+  assert.equal(board.canRedo, true)
+  board.undo()
+  assert.equal(acknowledgeLast(board, socket).targetId, first.id)
+  assert.equal(board.canUndo, false)
+  assert.deepEqual(board.operations, state.document.operations)
+  for (const operation of [first, erased]) {
+    board.redo()
+    const shown = acknowledgeLast(board, socket)
+    assert.equal(shown.targetId, operation.id)
+    assert.equal(shown.visible, true)
+  }
+  assert.deepEqual(board.operations, [...state.document.operations, first, erased])
+  assert.equal(board.canRedo, false)
+})
+
+test('a newly acknowledged stroke after undo clears only the redo branch', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  const first = newStroke(state)
+  board.commit(first)
+  acknowledgeLast(board, socket)
+  board.undo()
+  acknowledgeLast(board, socket)
+  const next = newStroke(state)
+  board.commit(next)
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+  acknowledgeLast(board, socket)
+  assert.equal(board.canRedo, false)
+  const sent = socket.sent.length
+  board.redo()
+  assert.equal(socket.sent.length, sent)
+  board.undo()
+  assert.equal(acknowledgeLast(board, socket).targetId, next.id)
+  assert.deepEqual(board.operations, state.document.operations)
+})
+
+for (const direction of ['undo', 'redo'])
+  for (const saved of [false, true]) {
+    test(`${direction} ${saved ? 'saved before lost ACK' : 'not saved'} recovers once and moves its stack after canonical confirmation`, async (context) => {
+      const { board, socket, sockets, state, network } = await connectedProject(context)
+      const local = newStroke(state)
+      board.commit(local)
+      acknowledgeLast(board, socket)
+      if (direction === 'redo') {
+        board.undo()
+        acknowledgeLast(board, socket)
+      }
+      const canonical = model.normalizeDocument(board.document)
+      const sequence = board.sequence
+      board[direction]()
+      const event = socket.sent.at(-1).operation
+      network.navigator.onLine = false
+      network.dispatchEvent(new Event('offline'))
+      assert.equal(board.canUndo, false)
+      assert.equal(board.canRedo, false)
+      network.navigator.onLine = true
+      network.dispatchEvent(new Event('online'))
+      await new Promise(setImmediate)
+      const returned = sockets[1]
+      returned.open()
+      returned.receive({
+        ...state,
+        sequence: sequence + (saved ? 1 : 0),
+        document: {
+          ...canonical,
+          operations: saved ? [...canonical.operations, event] : canonical.operations,
+        },
+      })
+      const retries = returned.sent.filter(({ type }) => type === 'operation.commit')
+      assert.equal(retries.length, saved ? 0 : 1)
+      if (!saved) {
+        assert.deepEqual(retries[0].operation, event)
+        assert.equal(board.canUndo, false)
+        returned.receive({ type: 'operation.committed', operation: event, sequence: sequence + 1 })
+      }
+      returned.receive({
+        type: 'operation.committed',
+        operation: event,
+        sequence: sequence + 1,
+        duplicate: true,
+      })
+      assert.equal(board.pendingCount, 0)
+      assert.equal(board.canRedo, direction === 'undo')
+      assert.equal(board.canUndo, direction === 'redo')
+      board[direction === 'undo' ? 'redo' : 'undo']()
+      assert.equal(returned.sent.at(-1).operation.targetId, local.id)
+    })
+  }
+
+for (const saved of [false, true]) {
+  test(`a local stroke ${saved ? 'already saved' : 'retried'} becomes undoable after a lost-ack reconnect`, async (context) => {
+    const { board, socket, sockets, state, network } = await connectedProject(context)
+    const local = newStroke(state)
+    board.commit(local)
+    network.navigator.onLine = false
+    network.dispatchEvent(new Event('offline'))
+    network.navigator.onLine = true
+    network.dispatchEvent(new Event('online'))
+    await new Promise(setImmediate)
+    const returned = sockets[1]
+    returned.open()
+    returned.receive({
+      ...state,
+      sequence: saved ? 1 : 0,
+      document: {
+        ...state.document,
+        operations: saved ? [...state.document.operations, local] : state.document.operations,
+      },
+    })
+    if (!saved) acknowledgeLast(board, returned)
+    assert.equal(board.canUndo, true)
+    board.undo()
+    assert.equal(returned.sent.at(-1).operation.targetId, local.id)
+    assert.equal(socket.readyState, 3)
+  })
+}
+
+test('rename preserves history while a sharing mode change resets stacks without changing saved events', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  board.commit(newStroke(state))
+  acknowledgeLast(board, socket)
+  board.undo()
+  acknowledgeLast(board, socket)
+  board.room = { ...board.room, title: 'Renamed' }
+  assert.equal(board.canRedo, true)
+  const document = model.normalizeDocument(board.document)
+  board.room.sharingEnabled = true
+  board.room.sharingEnabled = false
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+  assert.deepEqual(board.document, document)
+})
+
+test('mode changes during a pending undo keep the acknowledged result but never revive the old stack', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  board.commit(newStroke(state))
+  acknowledgeLast(board, socket)
+  board.undo()
+  board.room.sharingEnabled = true
+  const event = acknowledgeLast(board, socket)
+  assert.equal(board.pendingCount, 0)
+  board.room.sharingEnabled = false
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+  assert.ok(board.document.operations.some(({ id }) => id === event.id))
+})
+
+test('reopening an editor or changing accounts does not restore session undo stacks from the document cache', async (context) => {
+  const { board, socket, sockets, state } = await connectedProject(context)
+  board.commit(newStroke(state))
+  acknowledgeLast(board, socket)
+  const document = model.normalizeDocument(board.document)
+  board.leaveRoom()
+  await board.connect(roomId)
+  sockets[1].open()
+  sockets[1].receive({ ...state, sequence: 1, document })
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+  assert.deepEqual(board.document, document)
+  board.setAccount('other')
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+})
+
+test('shared owners and members cannot create session history through project undo or redo', async (context) => {
+  for (const options of [{ shared: true }, { accountId: 'other-member' }]) {
+    const { board, socket, state } = await connectedProject(context, options)
+    board.commit(newStroke(state))
+    acknowledgeLast(board, socket)
+    const before = socket.sent.length
+    board.undo()
+    board.redo()
+    assert.equal(board.canUndo, false)
+    assert.equal(board.canRedo, false)
+    assert.equal(socket.sent.length, before)
+  }
+})
+
+test('a rejected undo restores visible strokes without creating a redo acknowledgement', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  const local = newStroke(state)
+  board.commit(local)
+  acknowledgeLast(board, socket)
+  board.undo()
+  const hidden = socket.sent.at(-1).operation
+  socket.receive({
+    type: 'error',
+    code: 'INVALID_INPUT',
+    message: 'Cannot undo',
+    operationId: hidden.id,
+  })
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+  assert.deepEqual(board.operations, [...state.document.operations, local])
+  assert.deepEqual(board.rejected, [hidden])
+})
+
+test('a visibility change from another tab resets the local history and retains canonical drawing state', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  const local = newStroke(state)
+  board.commit(local)
+  acknowledgeLast(board, socket)
+  socket.receive({ type: 'operation.committed', sequence: 2, operation: visibility(local.id) })
+  assert.equal(board.canUndo, false)
+  assert.equal(board.canRedo, false)
+  assert.deepEqual(board.operations, state.document.operations)
+})
+
+test('v2 normalizes legacy state and renders visibility in order without losing raw history', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  const original = state.document.operations[0]
+  assert.equal(state.document.version, 1)
+  assert.equal(board.document.version, 2)
+  const hidden = visibility(original.id)
+  socket.receive({ type: 'operation.committed', sequence: 1, operation: hidden })
+  assert.deepEqual(board.operations, [])
+  assert.deepEqual(board.document.operations, [original, hidden])
+  assert.deepEqual(board.exportDocument().operations, [original, hidden])
+  const shown = visibility(original.id, true)
+  socket.receive({ type: 'operation.committed', sequence: 2, operation: shown })
+  socket.receive({ type: 'operation.committed', sequence: 2, operation: shown, duplicate: true })
+  assert.deepEqual(board.operations, [original])
+  assert.deepEqual(board.document.operations, [original, hidden, shown])
+  assert.ok(socket.sent.every(({ v }) => v === 2))
+})
+
+test('v2 state can begin with hidden strokes and exports retain history plus pending drawings', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  const original = state.document.operations[0]
+  const hidden = visibility(original.id)
+  socket.receive({
+    ...state,
+    sequence: 1,
+    document: { ...state.document, version: 2, operations: [original, hidden] },
+  })
+  assert.deepEqual(board.operations, [])
+  const next = { ...original, id: crypto.randomUUID() }
+  board.commit(next)
+  assert.deepEqual(board.operations, [next])
+  assert.deepEqual(board.exportDocument().operations, [original, hidden, next])
+})
+
+test('pending visibility is optimistic until acknowledged and permission errors restore the drawing', async (context) => {
+  for (const code of ['INVALID_INPUT', 'OWNER_REQUIRED', 'PERSONAL_MODE_REQUIRED']) {
+    const { board, socket, state } = await connectedProject(context)
+    const original = state.document.operations[0]
+    const hidden = visibility(original.id)
+    board.commit(hidden)
+    assert.equal(board.pendingCount, 1)
+    assert.deepEqual(board.operations, [])
+    assert.deepEqual(board.document.operations, [original])
+    assert.deepEqual(socket.sent.at(-1), { v: 2, type: 'operation.commit', operation: hidden })
+    socket.receive({ type: 'error', code, message: 'Cannot save event', operationId: hidden.id })
+    assert.equal(board.pendingCount, 0)
+    assert.deepEqual(board.operations, [original])
+    assert.deepEqual(board.rejected, [hidden])
+    assert.deepEqual(board.exportDocument().operations, [original, hidden])
+  }
+})
+
+for (const saved of [false, true]) {
+  test(`visibility ${saved ? 'already committed' : 'not committed'} reconciles by raw history UUID after offline recovery`, async (context) => {
+    const { board, socket, sockets, network, state } = await connectedProject(context)
+    const original = state.document.operations[0]
+    const hidden = visibility(original.id)
+    board.commit(hidden)
+    network.navigator.onLine = false
+    network.dispatchEvent(new Event('offline'))
+    assert.equal(board.pendingCount, 1)
+    network.navigator.onLine = true
+    network.dispatchEvent(new Event('online'))
+    await new Promise(setImmediate)
+    const returned = sockets[1]
+    returned.open()
+    returned.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+    returned.receive({
+      ...state,
+      sequence: saved ? 1 : 0,
+      document: {
+        ...state.document,
+        version: 2,
+        operations: saved ? [original, hidden] : [original],
+      },
+    })
+    const retries = returned.sent.filter(({ type }) => type === 'operation.commit')
+    assert.equal(retries.length, saved ? 0 : 1)
+    if (!saved) {
+      assert.deepEqual(retries[0].operation, hidden)
+      assert.equal(board.pendingCount, 1)
+      returned.receive({ type: 'operation.committed', sequence: 1, operation: hidden })
+    }
+    returned.receive({
+      type: 'operation.committed',
+      sequence: 1,
+      operation: hidden,
+      duplicate: true,
+    })
+    assert.equal(board.pendingCount, 0)
+    assert.deepEqual(board.document.operations, [original, hidden])
+    assert.deepEqual(board.operations, [])
+    assert.equal(socket.readyState, 3)
+  })
+}
+
+test('visibility with a sequence gap remains pending until canonical v2 state confirms it', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  const hidden = visibility(state.document.operations[0].id)
+  board.commit(hidden)
+  socket.receive({ type: 'operation.committed', operation: hidden, sequence: 2 })
+  assert.equal(board.status, 'reconnecting')
+  assert.equal(board.pendingCount, 1)
+  assert.deepEqual(board.document.operations, state.document.operations)
+})
+
+test('an acknowledgement outside known history cannot discard a pending visibility event', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  socket.receive({ ...state, sequence: 1 })
+  const hidden = visibility(state.document.operations[0].id)
+  board.commit(hidden)
+  socket.receive({ type: 'operation.committed', operation: hidden, sequence: 1 })
+  assert.equal(board.status, 'reconnecting')
+  assert.equal(board.pendingCount, 1)
+})
+
+test('visibility cannot be sent by a shared owner, member or while another operation is pending', async (context) => {
+  for (const options of [{ shared: true }, { accountId: 'other-member' }, {}]) {
+    const { board, socket, state } = await connectedProject(context, options)
+    const original = state.document.operations[0]
+    if (!options.shared && !options.accountId)
+      board.commit({ ...original, id: crypto.randomUUID() })
+    const before = socket.sent.length
+    board.commit(visibility(original.id))
+    assert.equal(socket.sent.length, before)
+    assert.deepEqual(
+      board.operations.filter(({ id }) => id === original.id),
+      [original],
+    )
+  }
+})
+
+test('a protocol mismatch locks the board without discarding pending history or retrying', async (context) => {
+  const { board, socket, sockets, timers, state } = await connectedProject(context)
+  const hidden = visibility(state.document.operations[0].id)
+  board.commit(hidden)
+  socket.receive({ v: 1, type: 'presence', members: [] })
+  assert.equal(board.status, 'error')
+  assert.equal(board.pendingCount, 1)
+  assert.equal(timers.size, 0)
+  assert.match(board.error, /Phiên bản kết nối/)
+  await board.connect(roomId)
+  const returned = sockets[1]
+  returned.open()
+  returned.receive(state)
+  assert.deepEqual(returned.sent.at(-1).operation, hidden)
+  returned.receive({ type: 'operation.committed', operation: hidden, sequence: 1 })
+  assert.equal(board.pendingCount, 0)
+  assert.deepEqual(board.operations, [])
+})
+
 test('auth precedes room join and only authoritative state marks the board connected', async (context) => {
   const { board, sockets, timers } = setup(context)
   await board.connect(roomId)
@@ -113,9 +546,9 @@ test('auth precedes room join and only authoritative state marks the board conne
   assert.equal(board.status, 'connecting')
   assert.equal(socket.sent.length, 0)
   socket.open()
-  assert.deepEqual(socket.sent, [{ v: 1, type: 'auth', token: 'test-session' }])
+  assert.deepEqual(socket.sent, [{ v: 2, type: 'auth', token: 'test-session' }])
   socket.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
-  assert.deepEqual(socket.sent.at(-1), { v: 1, type: 'room.join', roomId })
+  assert.deepEqual(socket.sent.at(-1), { v: 2, type: 'room.join', roomId })
   assert.equal(board.status, 'connecting')
   socket.receive(roomState())
   assert.equal(board.status, 'connected')
@@ -158,7 +591,7 @@ test('switching rooms ignores callbacks from the old socket and clears its state
   const lateClose = oldSocket.onclose
   await board.connect(otherRoomId)
   lateOpen()
-  lateMessage({ data: JSON.stringify({ v: 1, ...roomState() }) })
+  lateMessage({ data: JSON.stringify({ v: 2, ...roomState() }) })
   lateClose({ code: 4401 })
   assert.equal(sockets[1].sent.length, 0)
   assert.equal(board.status, 'connecting')
@@ -182,6 +615,143 @@ for (const code of ['ROOM_NOT_FOUND', 'ROOM_FULL']) {
     assert.equal(sockets.length, 2)
   })
 }
+
+// Hết chỗ khi reconnect không được xóa nét chờ hoặc tự lặp; thử lại chỉ gửi nét sau trạng thái mới.
+test('a full project preserves pending work until a successful manual reconnect', async (context) => {
+  const { board, socket, state, sockets, timers, network } = await connectedProject(context)
+  const operation = newStroke(state)
+  board.commit(operation)
+  socket.close(1006)
+  const retry = [...timers.values()].find(({ delay }) => delay >= 800 && delay < 1000)
+  await retry.callback()
+  sockets[1].open()
+  sockets[1].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+  sockets[1].receive({ type: 'error', code: 'ROOM_FULL', message: 'Internal capacity detail' })
+  assert.equal(board.status, 'error')
+  assert.equal(board.authRequired, false)
+  assert.equal(board.room.id, roomId)
+  assert.equal(board.pendingCount, 1)
+  assert.equal(board.document.operations.length, 1)
+  assert.equal(board.operations.at(-1).id, operation.id)
+  assert.equal(board.canUndo, false)
+  assert.equal(board.commit(newStroke(state)), false)
+  assert.equal(timers.size, 0)
+  assert.match(board.error, /10 kết nối/)
+  assert.match(board.error, /tab vẽ/)
+  assert.match(board.error, /Kết nối lại/)
+  assert.doesNotMatch(board.error, /Internal/)
+  network.dispatchEvent(new Event('offline'))
+  network.dispatchEvent(new Event('online'))
+  await new Promise(setImmediate)
+  assert.equal(sockets.length, 2)
+  await board.connect(roomId)
+  const returned = sockets[2]
+  returned.open()
+  returned.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+  assert.equal(returned.sent.filter(({ type }) => type === 'operation.commit').length, 0)
+  returned.receive(state)
+  const commits = returned.sent.filter(({ type }) => type === 'operation.commit')
+  assert.equal(commits.length, 1)
+  assert.equal(commits[0].operation.id, operation.id)
+  acknowledgeLast(board, returned)
+  assert.equal(board.status, 'connected')
+  assert.equal(board.pendingCount, 0)
+  assert.equal(board.document.operations.filter((item) => item.id === operation.id).length, 1)
+})
+
+for (const savedBeforeRetry of [false, true]) {
+  // Lỗi ghi giữ cảnh báo qua reconnect; chỉ ACK hoặc trạng thái chứa UUID mới xác nhận nét đã lưu.
+  test(`a write error recovers a ${savedBeforeRetry ? 'saved but unacknowledged' : 'not yet saved'} stroke without an early save`, async (context) => {
+    const { board, socket, state, sockets, timers } = await connectedProject(context)
+    const operation = newStroke(state)
+    const second = newStroke(state, 'eraser')
+    board.commit(operation)
+    board.commit(second)
+    socket.receive({
+      type: 'error',
+      code: 'SERVICE_UNAVAILABLE',
+      operationId: operation.id,
+      message: 'Service unavailable',
+    })
+    assert.equal(board.hasSaveError, true)
+    assert.equal(board.status, 'reconnecting')
+    assert.equal(board.pendingCount, 2)
+    assert.equal(board.document.operations.length, 1)
+    assert.equal(board.operations.at(-1).id, second.id)
+    const retry = [...timers.values()].find(({ delay }) => delay >= 800 && delay < 1000)
+    await retry.callback()
+    const returned = sockets[1]
+    returned.open()
+    returned.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+    assert.equal(board.hasSaveError, true)
+    assert.equal(returned.sent.filter(({ type }) => type === 'operation.commit').length, 0)
+    returned.receive({
+      ...state,
+      sequence: savedBeforeRetry ? 1 : 0,
+      document: {
+        ...state.document,
+        operations: [...state.document.operations, ...(savedBeforeRetry ? [operation] : [])],
+      },
+    })
+    const commits = returned.sent.filter(({ type }) => type === 'operation.commit')
+    assert.deepEqual(
+      commits.map((message) => message.operation.id),
+      savedBeforeRetry ? [second.id] : [operation.id, second.id],
+    )
+    assert.equal(board.status, 'connected')
+    assert.equal(board.hasSaveError, true)
+    assert.equal(board.canUndo, false)
+    const sent = returned.sent.length
+    assert.equal(board.commit(newStroke(state)), false)
+    board.preview(newStroke(state))
+    assert.equal(returned.sent.length, sent)
+    for (const message of commits) {
+      returned.receive({
+        type: 'operation.committed',
+        sequence: board.sequence + 1,
+        operation: message.operation,
+      })
+      assert.equal(board.hasSaveError, board.pendingCount > 0)
+    }
+    assert.equal(board.hasSaveError, false)
+    assert.equal(board.pendingCount, 0)
+    assert.equal(board.document.operations.filter((item) => item.id === operation.id).length, 1)
+    assert.equal(board.document.operations.filter((item) => item.id === second.id).length, 1)
+    assert.equal(board.canUndo, true)
+  })
+}
+
+// Đổi trang không làm mất cảnh báo/nét chờ của cùng tài khoản; đổi tài khoản phải xóa cả hai.
+test('write failures stay with cached projects and never cross account boundaries', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  const operation = newStroke(state)
+  board.commit(operation)
+  socket.receive({ type: 'error', code: 'SERVICE_UNAVAILABLE', operationId: operation.id })
+  board.leaveRoom()
+  board.prepareRoom(otherRoomId)
+  assert.equal(board.hasSaveError, false)
+  board.prepareRoom(roomId)
+  assert.equal(board.hasSaveError, true)
+  assert.equal(board.pendingCount, 1)
+  assert.equal(board.operations.at(-1).id, operation.id)
+  board.setAccount('another-account')
+  assert.equal(board.hasSaveError, false)
+  assert.equal(board.pendingCount, 0)
+  assert.equal(board.document.operations.length, 0)
+  assert.equal(board.prepareRoom(roomId), null)
+})
+
+// Lỗi đọc trạng thái/preview không được gắn nhầm thành lỗi ghi của nét khác đang chờ.
+test('service errors without a matching pending UUID do not mark a drawing write as failed', async (context) => {
+  for (const operationId of [undefined, crypto.randomUUID()]) {
+    const { board, socket, state } = await connectedProject(context)
+    board.commit(newStroke(state))
+    socket.receive({ type: 'error', code: 'SERVICE_UNAVAILABLE', operationId })
+    assert.equal(board.hasSaveError, false)
+    assert.equal(board.pendingCount, 1)
+    assert.equal(board.status, 'reconnecting')
+  }
+})
 
 test('sign-out cleanup closes the socket and discards room data and pending token callbacks', async (context) => {
   const { board, sockets, timers } = setup(context)
@@ -217,7 +787,7 @@ test('refreshing a connected session does not request room state again', async (
   socket.receive(roomState())
   const refresh = [...timers.values()].find(({ delay }) => delay > 40000 && delay < 50000)
   await refresh.callback()
-  assert.deepEqual(socket.sent.at(-1), { v: 1, type: 'auth.refresh', token: 'session-2' })
+  assert.deepEqual(socket.sent.at(-1), { v: 2, type: 'auth.refresh', token: 'session-2' })
   socket.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
   assert.equal(socket.sent.filter(({ type }) => type === 'room.join').length, 1)
   assert.equal(board.status, 'connected')
@@ -262,7 +832,7 @@ test('a stroke stays pending until acknowledged and duplicate acknowledgements a
   assert.equal(board.pendingCount, 1)
   assert.equal(board.document.operations.length, 1)
   assert.equal(board.operations.length, 2)
-  assert.deepEqual(socket.sent.at(-1), { v: 1, type: 'operation.commit', operation })
+  assert.deepEqual(socket.sent.at(-1), { v: 2, type: 'operation.commit', operation })
   socket.receive({ type: 'operation.committed', sequence: 1, operation })
   socket.receive({ type: 'operation.committed', sequence: 1, operation, duplicate: true })
   assert.equal(board.pendingCount, 0)
@@ -401,7 +971,119 @@ test('temporary token failures retry with bounded backoff until a fresh session 
   assert.equal(board.status, 'connected')
 })
 
-// Lỗi mạng khi refresh không được giả thành lỗi hết phiên; chỉ mã 4401 từ server mới dừng retry.
+// Server từ chối xác thực phải khóa ngay, kể cả frame đóng socket chưa tới; giữ nét chờ trong RAM.
+test('authentication error frames stop drawing immediately without discarding pending work', async (context) => {
+  for (const code of ['AUTH_REQUIRED', 'AUTH_EXPIRED']) {
+    const { board, socket, state, sockets, timers, network } = await connectedProject(context)
+    const operation = newStroke(state)
+    board.commit(operation)
+    const previousHandler = socket.onmessage
+    socket.receive({ type: 'error', code, message: 'Private authentication detail' })
+    assert.equal(board.status, 'error')
+    assert.equal(board.authRequired, true)
+    assert.equal(board.room.id, roomId)
+    assert.equal(board.pendingCount, 1)
+    assert.equal(board.operations.at(-1).id, operation.id)
+    assert.equal(board.commit(newStroke(state)), false)
+    assert.equal(board.canUndo, false)
+    assert.equal(board.canRedo, false)
+    assert.equal(timers.size, 0)
+    assert.match(board.error, /Đăng nhập lại/)
+    assert.doesNotMatch(board.error, /Private/)
+    // Frame trễ không được biến nét chưa lưu thành đã lưu sau khi phiên đã bị khóa.
+    previousHandler({
+      data: JSON.stringify({ v: 2, type: 'operation.committed', sequence: 1, operation }),
+    })
+    network.dispatchEvent(new Event('offline'))
+    network.dispatchEvent(new Event('online'))
+    await new Promise(setImmediate)
+    assert.equal(sockets.length, 1)
+    assert.equal(board.pendingCount, 1)
+  }
+})
+
+for (const savedBeforeExpiry of [false, true]) {
+  // Nối lại cùng tài khoản phải đối chiếu trạng thái trước retry, dùng UUID cũ khi ACK bị mất.
+  test(`expired authentication recovers a ${savedBeforeExpiry ? 'saved but unacknowledged' : 'not yet saved'} stroke exactly once`, async (context) => {
+    const { board, socket, state, sockets, timers } = await connectedProject(context)
+    const operation = newStroke(state)
+    board.commit(operation)
+    socket.close(4401)
+    assert.equal(board.authRequired, true)
+    assert.equal(board.pendingCount, 1)
+    assert.equal(board.document.operations.length, 1)
+    assert.equal(timers.size, 0)
+    await board.connect(roomId)
+    const returned = sockets[1]
+    returned.open()
+    returned.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+    assert.equal(board.pendingCount, 1)
+    assert.equal(returned.sent.filter((message) => message.type === 'operation.commit').length, 0)
+    returned.receive({
+      ...state,
+      sequence: savedBeforeExpiry ? 1 : 0,
+      document: {
+        ...state.document,
+        operations: [...state.document.operations, ...(savedBeforeExpiry ? [operation] : [])],
+      },
+    })
+    const retries = returned.sent.filter((message) => message.type === 'operation.commit')
+    assert.equal(retries.length, savedBeforeExpiry ? 0 : 1)
+    if (!savedBeforeExpiry) {
+      assert.equal(retries[0].operation.id, operation.id)
+      acknowledgeLast(board, returned)
+    }
+    assert.equal(board.status, 'connected')
+    assert.equal(board.authRequired, false)
+    assert.equal(board.pendingCount, 0)
+    assert.equal(board.document.operations.filter((item) => item.id === operation.id).length, 1)
+    assert.equal(board.operations.length, 2)
+    assert.equal(board.canUndo, true)
+  })
+}
+
+for (const stage of ['initial', 'refresh']) {
+  // Không có token lúc mở hoặc refresh phải dừng timer; SDK báo lỗi mạng vẫn được test retry riêng.
+  test(`an absent token during ${stage} authentication stops automatic reconnects`, async (context) => {
+    let calls = 0
+    const { board, sockets, timers, network } = setup(context, async () => {
+      calls++
+      if (stage === 'initial' || calls > 1) throw new SignInRequiredError('Missing session')
+      return 'test-session'
+    })
+    await board.connect(roomId)
+    if (stage === 'refresh') {
+      sockets[0].open()
+      sockets[0].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+      sockets[0].receive(roomState())
+      const refresh = [...timers.values()].find(({ delay }) => delay > 40000 && delay < 50000)
+      await refresh.callback()
+    }
+    assert.equal(board.status, 'error')
+    assert.equal(board.authRequired, true)
+    assert.equal(timers.size, 0)
+    network.dispatchEvent(new Event('online'))
+    await new Promise(setImmediate)
+    assert.equal(calls, stage === 'initial' ? 1 : 2)
+  })
+}
+
+// Giữ dữ liệu khi hết phiên không được làm rò dữ liệu sau khi người dùng đổi tài khoản.
+test('switching accounts after authentication expiry clears retained documents and pending work', async (context) => {
+  const { board, socket, state } = await connectedProject(context)
+  board.commit(newStroke(state))
+  socket.close(4401)
+  assert.equal(board.pendingCount, 1)
+  board.setAccount('another-account')
+  assert.equal(board.status, 'idle')
+  assert.equal(board.authRequired, false)
+  assert.equal(board.pendingCount, 0)
+  assert.equal(board.room, null)
+  assert.equal(board.document.operations.length, 0)
+  assert.equal(board.prepareRoom(roomId), null)
+})
+
+// Lỗi mạng khi refresh không được giả thành hết phiên; mã xác thực của server hoặc SDK thiếu token mới dừng retry.
 test('a refresh network failure reconnects but server authentication rejection stops retries', async (context) => {
   let tokenRequests = 0
   const { board, sockets, timers, network } = setup(context, async () => {
@@ -551,7 +1233,7 @@ for (const saved of [false, true]) {
     assert.deepEqual(board.operations, [operation])
     assert.equal(board.pendingCount, 1)
     lateMessage({
-      data: JSON.stringify({ v: 1, type: 'operation.committed', operation, sequence: 1 }),
+      data: JSON.stringify({ v: 2, type: 'operation.committed', operation, sequence: 1 }),
     })
     assert.equal(board.pendingCount, 1)
     await board.connect(roomId)
@@ -584,7 +1266,7 @@ test('cached rooms stay isolated and cannot draw before fresh room state', async
   sockets[1].receive(roomState(otherRoomId))
   board.leaveRoom()
   assert.equal(board.prepareRoom(roomId).id, roomId)
-  assert.deepEqual(board.document, original.document)
+  assert.deepEqual(board.document, model.normalizeDocument(original.document))
   board.commit(roomState().document.operations[0])
   assert.equal(board.pendingCount, 0)
   await board.connect(roomId)

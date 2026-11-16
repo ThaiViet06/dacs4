@@ -28,7 +28,8 @@ const router = createRouter({
         hash: to.hash,
       }),
     },
-    { path: '/invite/:token', name: 'invite', component: InviteView },
+    // Link bị cắt mất token vẫn vào trang lời mời để báo lỗi rõ ràng, không chuyển về Trang chủ.
+    { path: '/invite/:token?', name: 'invite', component: InviteView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

@@ -168,7 +168,7 @@ test("WebSocket accepts a valid session", { timeout: 5000 }, async (context) => 
   const socket = await connectSocket(context);
   const reply = once(socket, "message");
   const exp = Math.floor(Date.now() / 1000) + 300;
-  socket.send(JSON.stringify({ v: 1, type: "auth", token: sessionToken({ exp }) }));
+  socket.send(JSON.stringify({ v: 2, type: "auth", token: sessionToken({ exp }) }));
   const [raw] = await reply;
   const message = JSON.parse(raw.toString());
   assert.equal(message.type, "auth.ok");
@@ -180,10 +180,10 @@ test("WebSocket rejects an invalid session and closes with 4401", { timeout: 500
   const socket = await connectSocket(context);
   const reply = once(socket, "message");
   const closed = once(socket, "close");
-  socket.send(JSON.stringify({ v: 1, type: "auth", token: sessionToken({}, otherKeys.privateKey) }));
+  socket.send(JSON.stringify({ v: 2, type: "auth", token: sessionToken({}, otherKeys.privateKey) }));
   const [raw] = await reply;
   assert.deepEqual(JSON.parse(raw.toString()), {
-    v: 1, type: "error", code: "AUTH_EXPIRED", message: "Authentication expired. Sign in again.",
+    v: 2, type: "error", code: "AUTH_EXPIRED", message: "Authentication expired. Sign in again.",
   });
   const [code] = await closed;
   assert.equal(code, 4401);
@@ -193,13 +193,13 @@ test("WebSocket rejects an invalid session and closes with 4401", { timeout: 500
 test("WebSocket authenticates then loads authoritative state for a member", { timeout: 5000 }, async (context) => {
   const socket = await connectSocket(context);
   let reply = once(socket, "message");
-  socket.send(JSON.stringify({ v: 1, type: "auth", token: sessionToken() }));
+  socket.send(JSON.stringify({ v: 2, type: "auth", token: sessionToken() }));
   assert.equal(JSON.parse((await reply)[0].toString()).type, "auth.ok");
   const readsBefore = stateReads.length;
   reply = once(socket, "message");
-  socket.send(JSON.stringify({ v: 1, type: "room.join", roomId }));
+  socket.send(JSON.stringify({ v: 2, type: "room.join", roomId }));
   const state = JSON.parse((await reply)[0].toString());
-  assert.deepEqual(state, { v: 1, type: "room.state", room: { id: roomId, title: "Test room", ownerId: "user_test", sequence: 0 }, sequence: 0, document: emptyDocument() });
+  assert.deepEqual(state, { v: 2, type: "room.state", room: { id: roomId, title: "Test room", ownerId: "user_test", sequence: 0 }, sequence: 0, document: emptyDocument() });
   assert.deepEqual(stateReads.slice(readsBefore), [{ userId: "user_test", roomId }]);
 });
 
@@ -207,13 +207,13 @@ test("WebSocket authenticates then loads authoritative state for a member", { ti
 test("WebSocket denies a signed-in outsider without returning room state", { timeout: 5000 }, async (context) => {
   const socket = await connectSocket(context);
   let reply = once(socket, "message");
-  socket.send(JSON.stringify({ v: 1, type: "auth", token: sessionToken({ sub: "user_outside" }) }));
+  socket.send(JSON.stringify({ v: 2, type: "auth", token: sessionToken({ sub: "user_outside" }) }));
   assert.equal(JSON.parse((await reply)[0].toString()).type, "auth.ok");
   const readsBefore = stateReads.length;
   reply = once(socket, "message");
-  socket.send(JSON.stringify({ v: 1, type: "room.join", roomId }));
+  socket.send(JSON.stringify({ v: 2, type: "room.join", roomId }));
   assert.deepEqual(JSON.parse((await reply)[0].toString()), {
-    v: 1, type: "error", code: "ROOM_NOT_FOUND", message: "Room not found or access denied.",
+    v: 2, type: "error", code: "ROOM_NOT_FOUND", message: "Room not found or access denied.",
   });
   assert.deepEqual(stateReads.slice(readsBefore), [{ userId: "user_outside", roomId }]);
 });
@@ -224,7 +224,7 @@ test("WebSocket rejects room join before authentication", { timeout: 5000 }, asy
   const readsBefore = stateReads.length;
   const reply = once(socket, "message");
   const closed = once(socket, "close");
-  socket.send(JSON.stringify({ v: 1, type: "room.join", roomId }));
+  socket.send(JSON.stringify({ v: 2, type: "room.join", roomId }));
   assert.equal(JSON.parse((await reply)[0].toString()).code, "AUTH_REQUIRED");
   assert.equal((await closed)[0], 4401);
   assert.equal(stateReads.length, readsBefore);

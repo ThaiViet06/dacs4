@@ -1,6 +1,7 @@
 const { AppError } = require("./errors");
 const WIDTH = 1600;
 const HEIGHT = 900;
+const PROTOCOL_VERSION = 2;
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 // Ném lỗi đầu vào có cấu trúc khi điều kiện kiểm tra không đạt.
 function ensure(condition) { if (!condition) throw new AppError(400, "INVALID_INPUT", "Invalid request. Check the drawing or form values."); }
@@ -95,16 +96,18 @@ function saveSchema(value) {
   ensure(Number.isSafeInteger(value.sequence) && value.sequence >= 0);
   return { title: titleSchema(value.title), sequence: value.sequence };
 }
-// Kiểm tra phiên bản và cấu trúc của từng loại thông điệp WebSocket.
+// Giao thức v2 nhận nét hoặc ẩn/hiện khi commit; preview chỉ được chứa nét vẽ.
 function messageSchema(value) {
-  ensure(value && value.v === 1);
+  ensure(value && value.v === PROTOCOL_VERSION);
   if (["auth", "auth.refresh"].includes(value.type)) {
     object(value, ["v", "type", "token"]);
     ensure(typeof value.token === "string" && value.token.length > 0 && value.token.length <= 8192);
   } else if (value.type === "room.join") {
     object(value, ["v", "type", "roomId"]); uuidSchema(value.roomId);
   } else if (["operation.preview", "operation.commit"].includes(value.type)) {
-    object(value, ["v", "type", "operation"]); operationSchema(value.operation);
+    object(value, ["v", "type", "operation"]);
+    if (value.type === "operation.commit") eventSchema(value.operation);
+    else operationSchema(value.operation);
   } else {
     ensure(value.type === "preview.cancel");
     object(value, ["v", "type", "operationId"]); uuidSchema(value.operationId);
@@ -121,4 +124,4 @@ function parse(schema, value) {
 function checkSize(document) {
   if (Buffer.byteLength(JSON.stringify(document)) > MAX_DOCUMENT_BYTES) throw new AppError(413, "DOCUMENT_FULL", "This board reached its 5 MiB limit. Start a new room.");
 }
-module.exports = { WIDTH, HEIGHT, MAX_DOCUMENT_BYTES, operationSchema, eventSchema, normalizeDocument, messageSchema, titleSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema, emptyDocument, parse, checkSize };
+module.exports = { WIDTH, HEIGHT, PROTOCOL_VERSION, MAX_DOCUMENT_BYTES, operationSchema, eventSchema, normalizeDocument, messageSchema, titleSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema, emptyDocument, parse, checkSize };

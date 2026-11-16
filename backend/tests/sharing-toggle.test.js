@@ -162,7 +162,7 @@ async function connect(context, application, user, roomId) {
     return new Promise((resolve) => waiting.push({ type, resolve }));
   }
   // Gửi thông điệp theo protocol hiện tại của ứng dụng.
-  function send(type, data) { socket.send(JSON.stringify({ v: 1, type, ...data })); }
+  function send(type, data) { socket.send(JSON.stringify({ v: 2, type, ...data })); }
   context.after(() => socket.terminate());
   await once(socket, "open");
   send("auth", { token: user });

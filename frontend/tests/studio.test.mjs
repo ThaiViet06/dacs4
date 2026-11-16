@@ -6,6 +6,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import { createRenderer, reactive, ref, nextTick } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 import ts from 'typescript'
+import * as model from '../src/drawing/model.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -32,6 +33,7 @@ function mountScript(context, filename, dependencies, props = {}, globals = {}) 
     compileScript(descriptor, { id: 'studio-test' }).content,
     {
       '../stores/projects': { useProjectsStore: () => ({}) },
+      '../drawing/model': model,
       ...dependencies,
       'vue-router': {
         ...require('vue-router'),
@@ -92,13 +94,23 @@ function dialog() {
 
 // Dữ liệu store giả chỉ ghi nhận lời gọi; logic đồng bộ thực tế được kiểm tra ở board-connection.test.mjs.
 function setup(context, project = false, isOwner = true, sharingEnabled = true) {
-  const calls = { local: 0, undo: 0, redo: 0, connect: [] }
+  const calls = { local: 0, undo: 0, redo: 0, projectUndo: 0, projectRedo: 0, connect: [] }
   const board = reactive({
     status: project ? 'connected' : 'idle',
     pendingCount: 0,
     rejected: [],
     error: '',
+    hasSaveError: false,
+    authRequired: false,
     document: { operations: [{ id: 'existing-stroke' }] },
+    canUndo: true,
+    canRedo: true,
+    undo() {
+      calls.projectUndo++
+    },
+    redo() {
+      calls.projectRedo++
+    },
     connect(id) {
       calls.connect.push(id)
     },
@@ -124,6 +136,8 @@ function setup(context, project = false, isOwner = true, sharingEnabled = true) 
     addEventListener: (_, handler) => listeners.add(handler),
     removeEventListener: (_, handler) => listeners.delete(handler),
   }
+  // Lớp DOM tối thiểu để kiểm tra phím tắt có bỏ qua ô nhập văn bản đúng cách.
+  class Element {}
   const mounted = mountScript(
     context,
     'components/StudioEditor.vue',
@@ -131,13 +145,14 @@ function setup(context, project = false, isOwner = true, sharingEnabled = true) 
       '../stores/board': { useBoardStore: () => board },
       '../stores/draft': { useDraftStore: () => draft },
       '../stores/drawing': { useDrawingStore: () => drawing },
+      '@clerk/vue': { SignInButton: {} },
     },
     { room, isOwner },
-    { window, HTMLElement: class {} },
+    { window, HTMLElement: Element },
   )
   mounted.state.resetDialog.value = dialog()
   mounted.state.shareDialog.value = dialog()
-  return { ...mounted, board, drawing, calls, listeners }
+  return { ...mounted, board, drawing, calls, listeners, Element }
 }
 
 // Project editor không được chạy nhánh reset local hoặc làm mất kết nối/nét đã tải khi vừa mount.
@@ -152,6 +167,34 @@ test('project Studio keeps loaded drawing and blocks local reset actions', (cont
   assert.equal(board.document.operations.length, 1)
   state.reconnectProject()
   assert.deepEqual(calls.connect, ['project-a'])
+})
+
+test('project stroke count excludes hidden strokes and visibility events', (context) => {
+  const { state, board } = setup(context, true)
+  const original = {
+    id: crypto.randomUUID(),
+    type: 'line',
+    width: 2,
+    color: '#123456',
+    start: { x: 0, y: 0 },
+    end: { x: 10, y: 10 },
+  }
+  board.document = { ...model.emptyDocument(), version: 2, operations: [original] }
+  assert.equal(state.operationCount.value, 1)
+  board.document.operations.push({
+    id: crypto.randomUUID(),
+    type: 'visibility',
+    targetId: original.id,
+    visible: false,
+  })
+  assert.equal(state.operationCount.value, 0)
+  board.document.operations.push({
+    id: crypto.randomUUID(),
+    type: 'visibility',
+    targetId: original.id,
+    visible: true,
+  })
+  assert.equal(state.operationCount.value, 1)
 })
 
 // Bản nháp vẫn dùng công cụ/phím tắt, lịch sử local và dialog xác nhận trước khi tạo trang mới.
@@ -204,20 +247,93 @@ test('local keyboard listener handles undo and both redo shortcuts', (context) =
   assert.equal(calls.undo, 2)
 })
 
-// Dự án tự lưu chưa có sự kiện undo: báo giới hạn thay vì sửa nét local rồi sai dữ liệu khi F5.
-test('saved projects explain unsupported history shortcuts without changing strokes', async (context) => {
+// Dự án Chung chỉ báo giới hạn, không được gọi lịch sử local hoặc lịch sử dự án.
+test('shared projects explain history restrictions without changing strokes', async (context) => {
   const { state, board, calls } = setup(context, true)
   state.handleToolShortcut({ key: 'z', ctrlKey: true, target: null, preventDefault() {} })
   await nextTick()
-  assert.match(state.actionFeedback.value, /chỉ hỗ trợ bản vẽ thử/)
+  assert.match(state.actionFeedback.value, /chủ dự án.*Cá nhân/)
   assert.equal(board.document.operations.length, 1)
   assert.equal(calls.undo, 0)
   assert.equal(calls.redo, 0)
+  assert.equal(calls.projectUndo, 0)
+  assert.equal(calls.projectRedo, 0)
 })
 
-// Canvas/công cụ phải khóa khi mất kết nối và không báo đã lưu khi còn nét chờ hoặc bị từ chối.
+test('personal project buttons and keyboard shortcuts use board history and never claim an early save', async (context) => {
+  const { state, calls, listeners } = setup(context, true, true, false)
+  assert.equal(state.historyAvailable.value, true)
+  state.undoStroke()
+  await nextTick()
+  assert.match(state.actionFeedback.value, /Đang gửi yêu cầu hoàn tác/)
+  const [keydown] = listeners
+  for (const options of [
+    { key: 'z', ctrlKey: true },
+    { key: 'y', ctrlKey: true },
+    { key: 'Z', ctrlKey: true, shiftKey: true },
+    { key: 'Z', metaKey: true, shiftKey: true },
+  ]) {
+    keydown({ ...options, target: null, preventDefault() {} })
+  }
+  assert.equal(calls.projectUndo, 2)
+  assert.equal(calls.projectRedo, 3)
+  assert.equal(calls.undo, 0)
+  assert.equal(calls.redo, 0)
+  await nextTick()
+  assert.match(state.actionFeedback.value, /Đang gửi yêu cầu làm lại/)
+})
+
+test('project history controls stay unavailable to members and shared owners', (context) => {
+  for (const [owner, shared] of [
+    [false, false],
+    [false, true],
+    [true, true],
+  ]) {
+    const { state, calls } = setup(context, true, owner, shared)
+    assert.equal(Boolean(state.historyAvailable.value), false)
+    state.undoStroke()
+    state.redoStroke()
+    assert.equal(calls.projectUndo, 0)
+    assert.equal(calls.projectRedo, 0)
+  }
+})
+
+test('personal project history explains empty, pending, failed and disconnected states', (context) => {
+  const { state, board, calls } = setup(context, true, true, false)
+  board.canUndo = false
+  board.canRedo = false
+  assert.match(state.historyHint.value, /lần mở này/)
+  board.pendingCount = 1
+  assert.match(state.historyHint.value, /Chờ máy chủ/)
+  state.undoStroke()
+  state.redoStroke()
+  assert.equal(calls.projectUndo, 0)
+  assert.equal(calls.projectRedo, 0)
+  board.pendingCount = 0
+  board.rejected.push({ id: 'failed' })
+  assert.match(state.historyHint.value, /chưa lưu/)
+  board.status = 'reconnecting'
+  assert.match(state.historyHint.value, /Kết nối lại/)
+})
+
+test('project history keyboard respects inputs, composition, held keys and open dialogs', (context) => {
+  const { state, calls, listeners, Element } = setup(context, true, true, false)
+  const [keydown] = listeners
+  const input = new Element()
+  input.closest = () => input
+  keydown({ key: 'z', ctrlKey: true, target: input, preventDefault() {} })
+  state.shareDialog.value.open = true
+  keydown({ key: 'z', ctrlKey: true, target: null, preventDefault() {} })
+  state.shareDialog.value.open = false
+  keydown({ key: 'z', ctrlKey: true, repeat: true, target: input, preventDefault() {} })
+  keydown({ key: 'z', ctrlKey: true, isComposing: true, target: input, preventDefault() {} })
+  assert.equal(calls.projectUndo, 0)
+  assert.equal(calls.projectRedo, 0)
+})
+
+// Canvas/công cụ phải khóa khi mất kết nối/hết chỗ, không báo đã lưu khi còn nét chờ hoặc bị từ chối.
 test('project Studio locks offline tools and distinguishes pending and rejected strokes', (context) => {
-  const { state, board, drawing } = setup(context, true)
+  const { state, board, drawing, calls } = setup(context, true)
   board.pendingCount = 2
   assert.match(state.saveStatus.value, /2/)
   board.status = 'reconnecting'
@@ -228,9 +344,58 @@ test('project Studio locks offline tools and distinguishes pending and rejected 
   board.rejected.push({ id: 'rejected-stroke' })
   assert.match(state.saveStatus.value, /chưa được lưu/)
   board.rejected = []
+  // Hết chỗ cũng là trạng thái khóa; nút kết nối lại phải nhắm đúng dự án, chưa báo đã lưu.
+  board.status = 'error'
+  board.error = 'Dự án đã đủ 10 kết nối.'
+  assert.equal(state.canDraw.value, false)
+  assert.doesNotMatch(state.saveStatus.value, /Đã lưu/)
+  state.reconnectProject()
+  assert.deepEqual(calls.connect, ['project-a'])
+  board.error = ''
   board.status = 'connected'
   assert.equal(state.canDraw.value, true)
   assert.match(state.saveStatus.value, /Đã lưu/)
+})
+
+// Kết nối đã trở lại vẫn chưa đủ: cảnh báo/khóa vẽ giữ đến khi các nét lỗi được xác nhận.
+test('write errors keep drawing and sharing locked until pending writes are confirmed', (context) => {
+  const { state, board, drawing, calls } = setup(context, true, true, false)
+  board.hasSaveError = true
+  board.pendingCount = 2
+  assert.equal(state.canDraw.value, false)
+  assert.equal(state.sharingBlocked.value, true)
+  assert.match(state.saveStatus.value, /Chưa xác nhận lưu 2/)
+  assert.doesNotMatch(state.saveStatus.value, /Đã lưu/)
+  state.handleToolShortcut({ key: 'e', target: null, preventDefault() {} })
+  state.handleToolShortcut({ key: 'z', ctrlKey: true, target: null, preventDefault() {} })
+  state.openSharing()
+  assert.equal(drawing.tool, 'freehand')
+  assert.equal(calls.projectUndo, 0)
+  assert.equal(state.shareDialog.value.open, false)
+  board.pendingCount = 0
+  board.hasSaveError = false
+  assert.equal(state.canDraw.value, true)
+  assert.equal(state.sharingBlocked.value, false)
+  assert.match(state.saveStatus.value, /Đã lưu/)
+})
+
+// Hết phiên phải khóa thao tác và giải thích đăng nhập lại; nét chờ không được báo thành đã lưu.
+test('expired project authentication locks shortcuts and preserves the pending save warning', (context) => {
+  const { state, board, drawing, calls } = setup(context, true, true, false)
+  board.status = 'error'
+  board.authRequired = true
+  board.pendingCount = 1
+  assert.equal(state.canDraw.value, false)
+  assert.match(state.saveStatus.value, /chờ xác nhận/)
+  state.handleToolShortcut({ key: 'e', target: null, preventDefault() {} })
+  state.handleToolShortcut({ key: 'z', ctrlKey: true, target: null, preventDefault() {} })
+  state.openSharing()
+  assert.equal(drawing.tool, 'freehand')
+  assert.equal(calls.projectUndo, 0)
+  assert.equal(state.shareDialog.value.open, false)
+  board.pendingCount = 0
+  assert.match(state.saveStatus.value, /Đăng nhập lại/)
+  assert.doesNotMatch(state.saveStatus.value, /Đã lưu/)
 })
 
 // Chủ mở hộp ở cả hai chế độ; thành viên không được mở và phím tắt Canvas không can thiệp vào dialog.
@@ -265,7 +430,7 @@ test('unmounting the editor removes shortcuts and closes its dialogs', (context)
 })
 
 // Link cũ chỉ chuyển hướng; danh sách, bản nháp và dự án có component riêng, không nhận nhầm try là ID.
-test('Studio separates projects and drafts and redirects old links preserving query and hash', async () => {
+test('Studio routes separate projects, drafts and malformed invites while preserving old redirects', async () => {
   const source = readFileSync(new URL('../src/router/index.ts', import.meta.url), 'utf8').replace(
     'import.meta.env.BASE_URL',
     "'/'",
@@ -285,6 +450,69 @@ test('Studio separates projects and drafts and redirects old links preserving qu
   assert.equal(router.currentRoute.value.name, 'studio')
   assert.equal(router.currentRoute.value.fullPath, '/studio?from=old#projects')
   assert.equal(router.currentRoute.value.matched.at(-1).components.default, dashboard)
+  // Token bị thiếu/ngắn vẫn mở trang báo lỗi; lời mời đầy đủ giữ nguyên đường dẫn.
+  for (const token of ['', 'short', 'A'.repeat(43)]) {
+    await router.push('/invite/' + token)
+    assert.equal(router.currentRoute.value.name, 'invite')
+    assert.equal(router.currentRoute.value.params.token ?? '', token)
+  }
+})
+
+test('project loader explains transient errors, retains the session and connects on manual retry', async (context) => {
+  for (const [code, status, message] of [
+    ['NETWORK_ERROR', undefined, /Kiểm tra mạng/],
+    ['REQUEST_TIMEOUT', undefined, /phản hồi quá lâu/],
+    ['SERVICE_UNAVAILABLE', 503, /chưa sẵn sàng/],
+    ['RATE_LIMIT', 429, /đợi một phút/],
+  ]) {
+    class ApiError extends Error {
+      // Dữ liệu lỗi giả giữ mã/status như helper thật; chi tiết nội bộ không được hiển thị.
+      constructor() {
+        super('Private failure details')
+        this.code = code
+        this.status = status
+      }
+    }
+    const cached = { id: 'project-a', title: 'Cached title' }
+    const connects = []
+    let requests = 0
+    const { state } = mountScript(context, 'views/ProjectView.vue', {
+      '@clerk/vue': {
+        useUser: () => ({ isLoaded: ref(true), isSignedIn: ref(true), user: ref({ id: 'owner' }) }),
+      },
+      'vue-router': { useRoute: () => ({ params: { id: cached.id } }) },
+      '../services/clerk': { clerkPublishableKey: 'configured' },
+      '../services/api': { ApiError },
+      '../services/rooms': {
+        getRoom: async () => {
+          if (requests++ === 0) throw new ApiError()
+          return { room: { ...cached, title: 'Current title' } }
+        },
+      },
+      '../stores/board': {
+        useBoardStore: () => ({
+          setAccount() {},
+          prepareRoom: () => cached,
+          leaveRoom() {},
+          forgetRoom: () => assert.fail('Temporary errors must preserve the cached session'),
+          reset: () => assert.fail('Temporary errors must not reset the account'),
+          connect: (id) => connects.push(id),
+        }),
+      },
+    })
+    await nextTick()
+    assert.match(state.error.value, message)
+    assert.doesNotMatch(state.error.value, /Private/)
+    assert.equal(state.room.value.id, cached.id)
+    assert.equal(state.loading.value, false)
+    assert.equal(requests, 1)
+    assert.deepEqual(connects, [])
+    await state.loadRoom()
+    assert.equal(state.error.value, '')
+    assert.equal(state.room.value.title, 'Current title')
+    assert.equal(requests, 2)
+    assert.deepEqual(connects, [cached.id])
+  }
 })
 
 // Loader vẫn phải bỏ metadata trễ khi đăng xuất/đổi ID trước khi editor mới được phép xuất hiện.
@@ -359,6 +587,52 @@ test('project loader exposes cached metadata while waiting but does not connect 
   assert.equal(state.room.value.title, 'Current title')
   assert.equal(board.room.title, 'Current title')
   assert.deepEqual(connects, [cached.id])
+})
+
+// HTTP 401 cần thao tác đăng nhập; tải lại chỉ nối socket khi backend xác nhận lại quyền.
+test('an HTTP authentication failure offers sign-in and only reconnects after a successful manual retry', async (context) => {
+  class ApiError extends Error {
+    status = 401
+  }
+  const room = { id: 'project-a', title: 'Saved project' }
+  const connects = []
+  let requests = 0
+  let resets = 0
+  const { state } = mountScript(context, 'views/ProjectView.vue', {
+    '@clerk/vue': {
+      useUser: () => ({ isLoaded: ref(true), isSignedIn: ref(true), user: ref({ id: 'owner' }) }),
+    },
+    'vue-router': { useRoute: () => ({ params: { id: room.id } }) },
+    '../services/clerk': { clerkPublishableKey: 'configured' },
+    '../services/api': { ApiError },
+    '../services/rooms': {
+      getRoom: async () => {
+        if (requests++ === 0) throw new ApiError('Expired session')
+        return { room }
+      },
+    },
+    '../stores/board': {
+      useBoardStore: () => ({
+        setAccount() {},
+        prepareRoom: () => null,
+        leaveRoom() {},
+        reset: () => resets++,
+        connect: (id) => connects.push(id),
+      }),
+    },
+  })
+  await nextTick()
+  assert.equal(state.authRequired.value, true)
+  assert.match(state.error.value, /Đăng nhập lại/)
+  assert.equal(state.room.value, null)
+  assert.equal(resets, 1)
+  assert.equal(requests, 1)
+  assert.deepEqual(connects, [])
+  await state.loadRoom()
+  assert.equal(state.authRequired.value, false)
+  assert.equal(state.error.value, '')
+  assert.equal(state.room.value.id, room.id)
+  assert.deepEqual(connects, [room.id])
 })
 
 test('project metadata failures discard forbidden caches and preserve service-error sessions', async (context) => {

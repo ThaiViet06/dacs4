@@ -48,14 +48,15 @@ npm run build
 
 ### Kiểm tra Canvas và kết nối phòng
 
-Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 82 test
-dùng Node test runner: 4 test tọa độ/replay, 27 WebSocket/cache editor, 2 bản nháp,
-25 Studio/lifecycle/routing/đổi tên/chia sẻ, 10 cache danh sách, 8 lời mời và 6 tài liệu v1/v2.
+Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 141 test
+dùng Node test runner: 4 test tọa độ/replay, 61 WebSocket/cache/lịch sử, 2 bản nháp,
+34 Studio/lifecycle/routing/đổi tên/chia sẻ, 10 cache danh sách, 11 lời mời,
+6 tài liệu v1/v2, 9 API và 4 helper xác thực.
 Dùng dịch vụ giả khi cần;
 không cần Clerk, Supabase hoặc backend đang chạy. Các test
 kiểm tra xác thực, tải trạng thái, đổi phòng/đăng xuất, refresh token, phản hồi
 trễ, nét chờ/acknowledgement, thứ tự nét/tẩy, Offline/Online và retry khi tải token
-gặp lỗi mạng. Server báo 4401 thì dừng để đăng nhập lại. Test mô phỏng không thay
+gặp lỗi mạng. Server từ chối phiên hoặc SDK không còn token thì dừng để đăng nhập lại. Test mô phỏng không thay
 thế kiểm tra hai tài khoản thật trên trình duyệt. Trường hợp mất acknowledgement
 kiểm tra riêng nét đã/chưa lưu, giữ UUID khi retry và giữ nét chờ khi thiếu sequence.
 
@@ -64,13 +65,58 @@ Kiểm tra thủ công: mở cùng phòng bằng hai tài khoản; ở tab A dù
 Canvas chỉ cho vẽ sau khi tải lại trạng thái phòng, gồm các nét mới của B.
 Không F5 trong lần kiểm tra này; kết quả được theo dõi trong `../Plans.md`.
 
+Mỗi dự án giới hạn 10 kết nối; mỗi tab editor tính một kết nối, kể cả cùng tài
+khoản. Hết chỗ sẽ khóa vẽ, dừng retry tự động và giữ nét chờ trong RAM. Đóng bớt
+tab vẽ hoặc chờ người khác rời dự án rồi bấm **Kết nối lại**; trạng thái server
+được đối chiếu trước khi retry nét bằng UUID cũ. Nghiệm thu: mở tổng cộng 11 tab
+cùng dự án, kiểm tra tab bị chặn và khả năng vẽ tiếp sau khi có chỗ trống.
+
+Server báo lỗi ghi cho UUID đang chờ thì giữ cảnh báo **Chưa xác nhận lưu** và
+khóa vẽ/preview/chia sẻ trong lúc phục hồi. Kết nối trở lại chưa đủ để báo đã lưu:
+phải đối chiếu trạng thái rồi nhận xác nhận cho hết lệnh chờ. Retry dùng UUID cũ;
+nét đã lưu nhưng mất xác nhận không gửi trùng. Cảnh báo và nét chờ giữ theo dự án
+trong RAM khi chuyển trang, xóa khi đăng xuất/đổi tài khoản hoặc F5/đóng tab.
+Lệnh bị từ chối có thông báo chưa lưu riêng. Lỗi ghi được test bằng SQL giả;
+nghiệm thu Supabase thật dùng dữ liệu test tách biệt theo `../Plans.md`.
+
+API có thời gian chờ 75 giây cho cả kết nối và đọc JSON. Trang mở dự án phân biệt
+mất mạng, timeout, dịch vụ chưa sẵn sàng và giới hạn yêu cầu; lỗi tạm thời giữ
+cache nhưng chỉ kết nối sau khi kiểm tra lại quyền. Phản hồi HTML không được coi
+là thành công; yêu cầu ghi không tự gửi lại khi chưa có xác nhận.
+Kiểm tra thêm: từ Studio bật Offline rồi mở dự án đã lưu để xem thông báo mạng;
+về Online và bấm **Tải lại**, kiểm tra tên/nét và vẽ tiếp. Test giả đã đạt;
+nghiệm thu trình duyệt thật được theo dõi trong `../Plans.md`.
+
+HTTP 401 khi mở dự án có nút **Đăng nhập lại**, sau đó bấm **Tải lại** để kiểm tra
+quyền. WebSocket 4401/lỗi xác thực khóa vẽ và dừng retry; nét chờ vẫn giữ trong RAM
+cho cùng tài khoản. Đăng nhập lại rồi bấm **Kết nối lại**: lấy token mới, nhận trạng
+thái server trước khi retry cùng UUID; nét đã lưu nhưng mất ACK không được gửi trùng.
+Lỗi mạng khi tải token vẫn được thử lại, không giả thành hết phiên. Đăng xuất/đổi
+tài khoản xóa cache; F5/đóng tab cũng mất nét chưa xác nhận trong RAM.
+Kiểm tra thủ công: chờ nét đã lưu, đăng xuất ở tab khác; editor cũ phải khóa/ẩn.
+Đăng nhập lại và mở dự án để kiểm tra nét đã lưu. Thu hồi/hết phiên Clerk thật cần
+nghiệm thu riêng; kết quả nằm trong `../Plans.md`.
+
 Model đã có `DrawingDocumentV2` và sự kiện `visibility` tham chiếu UUID nét gốc.
 `normalizeDocument()` sao chép dữ liệu v1/v2 sang v2, giữ hình học/lịch sử và dùng
 được với Pinia/Vue reactive. `getVisibleOperations()` lấy các nét đang hiện theo
-thứ tự ban đầu, kể cả khi làm lại nét tẩy. Đây là helpers chuẩn bị; store,
-WebSocket và phím tắt dự án chưa nối v2. Backend chịu trách nhiệm kiểm tra dữ liệu.
+thứ tự ban đầu, kể cả khi làm lại nét tẩy. Board đã chuẩn hóa tài liệu nhận được,
+giữ lịch sử đầy đủ và chỉ đưa nét đang hiện lên Canvas/nhãn số nét. Thao tác chờ
+có hiệu ứng tạm thời; backend từ chối quyền thì gỡ hiệu ứng, giữ bản ghi lỗi.
+Export vẫn có nét bị ẩn, lịch sử và thao tác chờ/lỗi để tránh mất dữ liệu.
+
+WebSocket dùng `{ v: 2, type, ... }` ở cả hai phía, đọc được tài liệu v1/v2.
+Preview chỉ chứa nét; ẩn/hiện gửi bằng commit, chỉ chủ Cá nhân khi không còn thao
+tác chờ/lỗi. Reconnect đối chiếu UUID trong toàn bộ lịch sử, gồm nét bị ẩn.
+Backend khác phiên bản thì khóa vẽ và giữ thao tác chờ trong RAM; cập nhật backend
+rồi bấm **Kết nối lại** để khôi phục thao tác chờ. Ngày 16/11/2026, người dùng
+xác nhận hai tài khoản thật vẽ/hình/tẩy đồng bộ, F5 giữ nét/vẽ tiếp và Offline/Online
+khóa vẽ/tự nối lại/nhận đủ nét mới. Nút/phím undo/redo Cá nhân đã có; nghiệm thu
+trên dự án đã lưu và lưu bền sự kiện ẩn/hiện trên Supabase thật theo `../Plans.md`.
 
 ### Editor Studio dùng chung
+
+Dùng thẻ dự án hoặc thẻ “+” trên `/studio` để mở editor tự lưu `/studio/:id`.
 
 | Đường dẫn | Chức năng |
 | --- | --- |
@@ -80,8 +126,18 @@ WebSocket và phím tắt dự án chưa nối v2. Backend chịu trách nhiệm
 
 `/gallery` và `/rooms/:id` cũ chỉ chuyển hướng, giữ query/hash. Các editor dùng
 chung `StudioEditor.vue`. Ctrl+Z hoàn tác; Ctrl+Y hoặc Ctrl+Shift+Z làm lại trên
-bản nháp, kể cả sau khi chỉnh cỡ bút/màu. Ô nhập văn bản giữ phím tắt riêng.
-Dự án tự lưu chưa hỗ trợ undo/redo; giao diện báo rõ giới hạn này.
+bản nháp hoặc dự án Cá nhân do bạn sở hữu. Ô nhập văn bản và dialog giữ phím tắt
+riêng; chế độ Chung không có điều khiển undo/redo.
+
+Lịch sử dự án chỉ gồm nét mới của lần mở editor; nét/tẩy được ẩn/hiện bằng sự
+kiện, không xóa nét gốc. Nút khóa khi chờ lưu, lỗi hoặc mất mạng; stack chỉ chuyển
+sau ACK hoặc room.state xác nhận UUID. ACK lặp/mất không chuyển stack hai lần.
+Vẽ nét mới đã xác nhận sẽ bỏ nhánh redo. F5, rời editor, đổi tài khoản/chế độ bắt
+đầu stack mới; đổi tên không xóa stack. Reconnect cùng phiên giữ stack, còn thay
+đổi ẩn/hiện từ tab khác bắt đầu lịch sử mới trên tài liệu chuẩn. Bản nháp vẫn có
+lịch sử riêng như trước. Ngày 16/11/2026, người dùng xác nhận Ctrl+Z/Y và F5 trên
+dự án Cá nhân đã lưu giữ đúng kết quả; restart backend tự nối lại, giữ bản vẽ và
+vẽ/undo tiếp được. Đối chiếu Supabase chỉ đọc xác nhận lịch sử cũ không đổi.
 
 Chủ dự án có nút **Đổi tên** trong editor, dùng `PATCH /api/rooms/:id` hiện có.
 Dialog kiểm tra 1–100 ký tự, chặn gửi trùng, chỉ đổi tên editor/card sau xác nhận;
@@ -116,8 +172,11 @@ Socket nhận 4403 dừng retry, xóa cache/nét chờ dự án và đưa thành
 với thông báo. Card bị loại ngay, GET trễ không khôi phục card; đổi tài khoản xóa
 thông báo. Người nhận link đã đăng nhập được tự tham gia/mở Canvas sau xác nhận
 backend. Nếu chưa đăng nhập, trang chờ Clerk rồi tự tiếp tục sau đăng nhập; không
-còn nút Tham gia phòng. Link sai/hết hiệu lực báo lỗi, lỗi kết nối có Thử lại và
-không tự lặp request. Đổi tài khoản/link hoặc rời trang bỏ phản hồi cũ, request
+còn nút Tham gia phòng. Link thiếu token (`/invite/`) hoặc sai định dạng báo lỗi trước khi yêu cầu đăng nhập.
+Server xác nhận link vô hiệu thì hướng dẫn xin link mới, ẩn Thử lại và chặn gửi
+cùng link hỏng. Lỗi phiên có Đăng nhập lại; lỗi kết nối/dịch vụ có Thử lại và không
+tự lặp request. HTML/404 từ dịch vụ chưa đủ để kết luận link vô hiệu.
+Đổi tài khoản/link hoặc rời trang bỏ phản hồi cũ, request
 đang chờ không nhận thêm lần bấm trùng. Test/Chrome với SDK/API/ws giả đạt cho
 desktop/390px. Ngày 16/11/2026, người dùng xác nhận bằng hai tài khoản thật:
 đăng nhập xong hoặc mở link khi đã đăng nhập đều tự vào đúng Canvas và vẽ đồng bộ.

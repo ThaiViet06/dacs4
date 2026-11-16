@@ -4,7 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const { WebSocketServer, WebSocket } = require("ws");
 const { AppError, publicError } = require("./errors");
-const { parse, messageSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema } = require("./protocol");
+const { parse, messageSchema, createSchema, sharingSchema, upgradeInvitationSchema, joinSchema, uuidSchema, saveSchema, PROTOCOL_VERSION } = require("./protocol");
 const { RoomQueue } = require("./queue");
 
 function createApplication({ repository, verifyToken, origins, heartbeatMs = 30000 }) {
@@ -107,10 +107,11 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
     res.status(error.status || 503).json({ error: publicError(error) });
   });
 
+  // Mọi phản hồi dùng v2, độc lập với phiên bản tài liệu v1/v2 được đọc từ database.
   function send(socket, type, data = {}) {
     if (socket.readyState !== WebSocket.OPEN) return;
     if (socket.bufferedAmount > 1024 * 1024) { socket.close(1013, "Connection too slow; reconnect"); return; }
-    socket.send(JSON.stringify({ v: 1, type, ...data }));
+    socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type, ...data }));
   }
   function broadcast(roomId, type, data, except) {
     for (const socket of rooms.get(roomId) || []) if (socket !== except) send(socket, type, data);
@@ -160,7 +161,8 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
       let message;
       try {
         if (binary) throw new AppError(400, "INVALID_MESSAGE", "Only JSON text messages are supported.");
-        try { message = parse(messageSchema, JSON.parse(raw.toString())); }
+        // Giữ ID từ JSON đã đọc để lỗi schema vẫn xác định được thao tác đang chờ; payload phải qua validator trước xử lý.
+        try { message = JSON.parse(raw.toString()); parse(messageSchema, message); }
         catch (error) { if (error instanceof SyntaxError) throw new AppError(400, "INVALID_JSON", "Message must be valid JSON."); throw error; }
         if (message.type === "auth" || message.type === "auth.refresh") {
           let identity;
@@ -218,7 +220,7 @@ function createApplication({ repository, verifyToken, origins, heartbeatMs = 300
         }
       } catch (error) {
         send(socket, "error", { ...publicError(error), operationId: message?.operation?.id });
-        if (message?.operation && socket.roomId) broadcast(socket.roomId, "preview.cancel", { clientId: socket.clientId, operationId: message.operation.id }, socket);
+        if (message?.operation && message.operation.type !== "visibility" && socket.roomId) broadcast(socket.roomId, "preview.cancel", { clientId: socket.clientId, operationId: message.operation.id }, socket);
         if (error.status === 401) socket.close(4401, "Authentication required");
       }
     }

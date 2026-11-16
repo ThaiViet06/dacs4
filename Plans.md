@@ -2,7 +2,7 @@
 
 Cập nhật: **16/11/2026**. Demo cho **2–10 người**, làm local trước Docker/deploy và **mỗi lần một bước nhỏ**. `[x]` là phần đã kiểm chứng trong phạm vi ghi rõ; `[ ]` là phần chưa hoàn thành.
 
-**Hiện trạng:** Backend 120 test đạt; frontend gần nhất 82 test/build/type-check và lint/format phần sửa đạt. Hai tài khoản thật đã nghiệm thu Studio/vẽ tự lưu, nháp/redo, đổi tên và chia sẻ/thu quyền/restart. Pha 6 đã có model v2 và lưu/tải sự kiện tại repository, kiểm chứng bằng SQL giả. WebSocket/store/Canvas v2 và phím tắt dự án còn lại.
+**Hiện trạng:** Frontend 141 test/build/type-check/lint phần sửa và toàn bộ 129 test backend đạt. Pha 8 đã kiểm tra lỗi HTTP/hết phiên/link mời/hết chỗ/lỗi ghi bằng code/test; lỗi database dùng SQL giả. Người dùng đã nghiệm thu vẽ/tẩy/undo/F5 sau sửa, Offline/Online, đăng xuất/đăng nhập, link mời và giới hạn 10 kết nối. Undo/redo Cá nhân đạt F5/restart; Cá nhân → Chung vẫn chờ đối chiếu đúng dự án.
 
 ## 1. Luồng sản phẩm đã chốt
 
@@ -73,7 +73,7 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 - [x] Cache card/bộ lọc theo tài khoản, cập nhật ngầm và bỏ phản hồi cũ. Đổi tên/chế độ cập nhật card; thu quyền loại card ngay. 10 test store và Chrome giả đạt; F5 tải lại danh sách.
 - [x] Cache editor theo dự án/tài khoản: khóa vẽ đến khi quyền/room.state hợp lệ, giữ nét chờ/rejected và link phiên. Rời trang đóng socket; mở lại đối chiếu/retry UUID cũ. Giữ tối đa năm phiên hoàn tất, không loại phiên có nét chưa lưu. Người dùng xác nhận dự án → Trang chủ → mở lại giữ nét và vẽ tiếp được; mất ACK/link/quyền kiểm chứng bằng test/Chrome giả. F5/đóng tab xóa RAM, chỉ nét đã xác nhận lưu bền.
 - [x] Tạo dự án Cá nhân thành công thì mở `/studio/:id`. Ngày 04/11/2026, người dùng xác nhận đúng editor/tên, vẽ và F5 giữ nét bằng tài khoản thật. Chrome với dịch vụ giả đã kiểm tra chờ/lỗi, gửi trùng và phản hồi sau đăng xuất/rời trang.
-- [x] `StudioEditor` dùng chung; `draft` giữ Vẽ thử, `board` giữ dự án và `ProjectView` kiểm tra quyền/kết nối. Điều hướng không xóa bản nháp/redo; cache dự án bị xóa khi mất quyền/đổi tài khoản. Undo/redo dự án vẫn chưa triển khai.
+- [x] `StudioEditor` dùng chung; `draft` giữ Vẽ thử, `board` giữ dự án và `ProjectView` kiểm tra quyền/kết nối. Điều hướng giữ bản nháp/redo; cache dự án xóa khi mất quyền/đổi tài khoản. Undo/redo Cá nhân theo Pha 6.
 - [x] Chủ đổi tên qua dialog 1–100 ký tự, chặn gửi trùng; cập nhật editor/card sau xác nhận, giữ nét/sequence/bộ lọc. Người dùng xác nhận tên mới và nét giữ đúng sau mở lại/F5 bằng tài khoản thật. Test/Chrome giả đạt cho lỗi, phản hồi trễ, quyền thành viên và 390px.
 - [x] Hộp Chia sẻ cho chủ ở cả hai chế độ, nối GET/PATCH, cập nhật editor/card sau xác nhận. Chặn đổi khi mất kết nối/còn nét chờ hoặc lỗi lưu; chặn gửi trùng và đóng hộp khi đang ghi. Chrome giả kiểm tra lỗi, phản hồi trễ, F5 và 390px đạt.
 - [x] Chọn Cá nhân cần xác nhận thu quyền; HMAC được khôi phục/copy, tắt xóa link, bật lại có link mới. Link cũ có nút cập nhật/xác nhận, giữ URL cũ khi hủy/lỗi và chỉ hiện URL mới sau xác nhận server. Undo/redo dự án còn theo Pha 6.
@@ -89,9 +89,9 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 - [x] Restart backend được xác nhận bằng hai tài khoản và truy vấn chỉ đọc: 43 nét cũ giữ nguyên, thêm một nét, sequence 44, UUID không trùng.
 - [x] Tự lưu v1 ở Cá nhân/Chung: acknowledgement sau COMMIT, retry cùng UUID và khóa vẽ khi mất kết nối đã test; người dùng đã xác nhận vẽ/F5/reconnect/restart.
 - [x] Bước 1: model `visibility`, chuẩn hóa v1 → v2 và hàm lấy nét đang hiện; 6 test frontend/9 backend đạt cho hình học/UUID/thứ tự/tẩy, lịch sử và giới hạn dữ liệu.
-- [x] Bước 2 (repository): lưu/tải sự kiện trong JSONB, khóa hàng/sequence, quyền chủ/Cá nhân và trả sau COMMIT. 17 test SQL giả đạt cho tải lại, retry/xung đột UUID, rollback và đổi chế độ đồng thời; giữ v1 khi chỉ có nét cũ. Chưa ghi/thử sự kiện trên Supabase thật.
-- [ ] Bước 3: nối WebSocket/store/Canvas v2, đọc được v1 và vẽ các nét đang hiện; mất acknowledgement không gửi trùng hoặc bỏ sớm nét chờ.
-- [ ] Bước 4: Ctrl+Z/Ctrl+Y và stack trong phiên editor; F5/đổi chế độ bắt đầu stack mới, kết quả đã xác nhận lưu bền. Khóa undo/redo khi Chung hoặc còn thao tác chờ.
+- [x] Bước 2 (repository): lưu/tải JSONB, khóa hàng/sequence, quyền chủ/Cá nhân và trả sau COMMIT; 17 test SQL giả đạt. Đã đối chiếu sự kiện trên Supabase thật qua F5/restart, chi tiết ở Pha 9.
+- [x] Bước 3 (code/test): WebSocket v2 nhận commit nét/ẩn-hiện, preview chỉ có nét. Board chuẩn hóa v1/v2, giữ lịch sử đầy đủ, Canvas/nhãn chỉ lấy nét đang hiện; retry theo UUID lịch sử, lỗi quyền trả lại hình cũ. 9 test store, 1 editor và 5 WebSocket mới đạt; nghiệm thu thật ghi ở Pha 9.
+- [x] Bước 4: nút và Ctrl+Z/Ctrl+Y/Ctrl+Shift+Z cho chủ Cá nhân; stack sau ACK, khóa khi chờ/lỗi/mất mạng. F5/rời editor/đổi chế độ reset stack, reconnect giữ lịch sử phiên. 14 test store/4 UI đạt; người dùng xác nhận Ctrl+Z/Y, F5 và restart trên dự án thật, Supabase đã đối chiếu.
 
 **Phụ thuộc:** quyền/chế độ Pha 4. **Đạt khi:** dự án cá nhân vẽ/undo/redo rồi F5 hoặc restart vẫn đúng; chuyển sang chung giữ nguyên kết quả và thứ tự.
 
@@ -109,14 +109,26 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 **Phụ thuộc:** Pha 4–6; chạy lại sau Docker.
 
 - [x] Người dùng nghiệm thu hai tài khoản: bật chia sẻ → copy/F5 giữ link → tham gia/vẽ → thu quyền → thành viên về Studio, link cũ bị chặn và nét của chủ giữ nguyên.
-- [ ] Hiển thị rõ lỗi phiên, link vô hiệu, hết chỗ, database, mất mạng và dịch vụ khởi động chậm.
+- [ ] Hai tài khoản kiểm tra dự án đã undo: Cá nhân → Chung giữ hình và quyền quản lý/undo đúng. Người dùng báo 3 bước đạt, nhưng SQL chỉ đọc vẫn thấy `hi` là Cá nhân, sequence 7, 1 thành viên/1 nét hiện; lịch sử cũ không đổi, chưa có nét thành viên mới. Chờ URL editor tài khoản thứ hai để đối chiếu đúng dự án.
+- [x] Lỗi HTTP khi mở dự án (code/test): phân biệt mất mạng, timeout 75 giây và dịch vụ chưa sẵn sàng; giữ status khi trả HTML/JSON lỗi. UI hướng dẫn Tải lại, giữ cache khi lỗi tạm thời; không tự lặp yêu cầu ghi. 8 test API và 1 test UI mới đạt, gồm ngắt khi đọc JSON, lỗi quyền/429 và retry thủ công thành công.
+- [x] Ngày 16/11, người dùng xác nhận trên trình duyệt thật: Studio → Offline → mở dự án báo đúng lỗi mạng; Online → Tải lại giữ nét và vẽ tiếp được.
+- [x] Hết phiên (code/test): HTTP 401 hiện Đăng nhập lại/Tải lại; WebSocket 4401 hoặc lỗi xác thực khóa vẽ, dừng retry và giữ nét chờ trong RAM cho cùng tài khoản. SDK không có token cần đăng nhập; lỗi mạng tải token không bị coi là hết phiên. Nối lại đối chiếu trạng thái trước retry UUID cũ; đăng xuất/đổi tài khoản xóa cache. 13 test frontend mới và 31 test xác thực backend đạt.
+- [x] Ngày 16/11, người dùng xác nhận trên trình duyệt thật: đăng xuất ở tab khác khóa/ẩn editor; đăng nhập lại và mở dự án giữ đúng nét đã lưu, vẽ tiếp được.
+- [ ] Nghiệm thu phiên Clerk thực sự hết hạn/bị thu hồi; không suy ra từ test giả hoặc đăng xuất thủ công.
+- [x] Link mời (code/test): thiếu token vẫn mở trang báo lỗi; server xác nhận link sai/vô hiệu thì hướng dẫn xin link mới, không gửi lặp. Link mới bỏ trạng thái lỗi cũ và tự tham gia; lỗi phiên có Đăng nhập lại, lỗi dịch vụ có Thử lại. HTML/404 không bị nhầm thành link vô hiệu. 11 test lời mời/test router và 27 test backend liên quan đạt.
+- [x] Ngày 16/11, người dùng xác nhận cả ba bước trên trình duyệt thật: link thiếu token báo lỗi; link bị thu hồi hướng dẫn xin link mới, không có Thử lại; link mới tự mở đúng Canvas bằng tài khoản thứ hai.
+- [x] Hết chỗ (code/test): 10 socket/dự án, kết nối thứ 11 không nhận trạng thái/ghi nét; hai lượt vào đồng thời chỉ lấy một chỗ cuối, tham gia lại không chiếm hai chỗ. Đóng socket giải phóng chỗ, client mới tải đủ nét rồi vẽ tiếp. 3 test backend mới dùng ws thật/SQL giả; test frontend giữ nét chờ, khóa vẽ và chỉ retry UUID sau trạng thái mới. Thông báo giải thích mỗi tab vẽ tính một kết nối và hướng dẫn Kết nối lại.
+- [x] Ngày 16/11, người dùng xác nhận cả hai bước với 11 tab editor thật: tab thứ 11 báo đủ 10 kết nối và khóa vẽ; đóng một tab đã kết nối rồi Kết nối lại ở tab bị chặn khôi phục đúng bản vẽ và vẽ tiếp được.
+- [x] Lỗi ghi (code/test): giữ cảnh báo theo dự án khi server chưa xác nhận; khóa vẽ/preview/chia sẻ trong lúc phục hồi. Nhận room.state chưa mở vẽ nếu nét lỗi vẫn chờ; chỉ ACK/đối chiếu UUID mới gỡ cảnh báo, lệnh bị từ chối có trạng thái chưa lưu riêng. Nét/cảnh báo qua chuyển trang giữ trong RAM cùng tài khoản; đổi tài khoản xóa cache. 5 test frontend và 1 test ws/SQL giả mới đạt, gồm nhiều nét lỗi, rollback và retry không trùng.
+- [x] Ngày 16/11, người dùng xác nhận cả hai bước hồi quy sau sửa: dự án Cá nhân vẽ/tẩy → chờ đã lưu → F5 giữ hình và vẽ tiếp; nét mới → chờ → undo → chờ → F5 giữ đúng kết quả.
+- [ ] Nghiệm thu lỗi ghi/mất xác nhận trên Supabase với dữ liệu test tách biệt; không suy ra từ test SQL giả hoặc luồng lưu bình thường.
 - [ ] Chờ thao tác được xác nhận trước đổi chế độ; không báo đã lưu khi còn nét chờ hoặc ghi lỗi.
 
 **Đạt khi:** mỗi trạng thái lỗi có hướng xử lý; đổi chế độ không làm mất dữ liệu đã xác nhận.
 
 ### Pha 9 — Kiểm thử hồi quy
 
-**Nền tảng:** frontend gần nhất 82 test (4 Canvas, 6 tài liệu, 27 WebSocket/cache, 2 nháp, 25 Studio, 10 danh sách, 8 lời mời), build/type-check/lint/format phần sửa đạt. Backend 120 test, gồm 9 tài liệu và 17 repository ẩn/hiện. Persistence v2 đạt bằng SQL giả, chưa nối WebSocket/UI hoặc thử Supabase thật. Nghiệm thu chia sẻ bằng trình duyệt ghi dưới đây.
+**Nền tảng:** frontend 141 test (4 Canvas, 6 tài liệu, 61 WebSocket/cache/lịch sử, 2 nháp, 34 Studio, 10 danh sách, 11 lời mời, 9 API, 4 helper xác thực), build/type-check/lint/format phần sửa và toàn bộ 129 test backend đạt. ACK trễ/lặp/mất, rollback, quyền, lỗi link/hết phiên/hết chỗ/ghi, reset phiên và phím tắt đã test. Test SQL giả không thay thế nghiệm thu lỗi database thật hoặc tải/độ trễ. Undo/redo/F5/restart đã nghiệm thu với Supabase thật.
 
 - [x] Người dùng nghiệm thu đổi tên bằng tài khoản thật: editor → Về Studio → mở lại/F5 giữ đúng tên và nét.
 - [x] Người dùng nghiệm thu cập nhật link cũ: hủy rồi xác nhận, F5 giữ link mới/bản vẽ; thành viên đang mở vẫn vẽ được mà không tham gia lại.
@@ -126,8 +138,9 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 - [x] Ngày 16/11, restart backend thật và đối chiếu Supabase chỉ đọc đạt; người dùng xác nhận link giữ nguyên, bản vẽ đúng và hai tài khoản vẫn vẽ đồng bộ.
 - [x] Ngày 16/11, hai tài khoản thật xác nhận tắt/bật lại: thu quyền, link mới khác link cũ, URL editor/link cũ bị chặn trước khi tham gia lại; link mới mở đúng Canvas, giữ nét và vẽ đồng bộ. Chạy lại 2 test backend và 2 frontend liên quan đều đạt.
 - [ ] Người chưa tham gia thử link cũ/mới sau nâng HMAC; nâng link/F5/giữ thành viên đã xác nhận.
-- [ ] Kiểm tra tự lưu/visibility/v1→v2, F5/restart, thứ tự, retry và chống trùng; hồi quy tẩy/công cụ/undo local.
-- [ ] Trên dữ liệu thử tách biệt: mất acknowledgement/lỗi ghi Supabase thật, vào muộn/vẽ đồng thời, phiên hết hạn, heartbeat và đổi tài khoản.
+- [x] Ngày 16/11, hai tài khoản thật xác nhận WebSocket v2: vẽ/hình/tẩy đồng bộ, F5 giữ nét và vẽ tiếp; Offline khóa vẽ, Online tự nối lại và nhận đủ nét mới.
+- [x] Ngày 16/11, dự án Cá nhân `hi`: Ctrl+Z/Y và F5 còn 1 nét; SQL chỉ đọc xác nhận v2, sequence 5, 2 nét/3 visibility. Sau restart, tự nối lại/vẽ/undo tiếp: sequence 7, 3 nét/4 visibility, vẫn hiện 1 nét; so sánh đầy đủ 5 thao tác cũ không đổi.
+- [ ] Trên dữ liệu thử tách biệt: mất acknowledgement/lỗi ghi Supabase thật, vào muộn/vẽ đồng thời, phiên hết hạn, heartbeat, đổi tài khoản và hồi quy undo local.
 - [ ] Hai tài khoản thử giao diện/bàn phím/màn hình nhỏ; chạy tối đa 10 client và ghi độ trễ/giới hạn.
 - [ ] Chạy test trong từng app, frontend build/type-check/lint/format phần thay đổi trước nghiệm thu.
 
@@ -151,8 +164,8 @@ Lệnh: `npm test` trong từng thư mục app; `npm run build` tại frontend. 
 
 ## 4. Thứ tự làm tiếp
 
-**Ưu tiên:** hoàn thiện API chia sẻ Pha 4/tự lưu-undo-v2 Pha 6 → Pha 8–9 → Docker → deploy/tài liệu. Kiểm thử và tài liệu tiến hành cùng từng bước.
+**Ưu tiên:** Pha 8–9 ghép luồng/quyền/xử lý lỗi và nghiệm thu → Docker Pha 7 → deploy/tài liệu. Kiểm thử và tài liệu tiến hành cùng từng bước.
 
-**Bước triển khai tiếp:** Pha 6, bước 3: nối giao thức WebSocket và board/Canvas với tài liệu v2, dựng nét đang hiện, giữ retry/sequence và đọc dữ liệu v1. Sau đó mới làm nút/phím Ctrl+Z/Ctrl+Y. Repository đã có lưu/tải sự kiện và test SQL giả; undo/redo dự án chưa bật trên giao diện.
+**Bước tiếp:** kiểm tra chờ lưu trước đổi chế độ ở Pha 8: còn nét chờ/lỗi ghi hoặc mất kết nối phải chặn đổi; sau xác nhận mới cho đổi và giữ đúng bản vẽ. Lỗi Supabase thật cần dữ liệu test tách biệt; phiên Clerk hết hạn/bị thu hồi theo dõi riêng. Phần chia sẻ sau undo vẫn chờ URL `/studio/:id` của tài khoản thứ hai để đối chiếu Supabase; không chặn công việc độc lập. `/studio/try` chỉ là bản nháp RAM.
 
 Snapshot bản sao riêng được xem xét sau khi luồng dự án/chia sẻ ổn định. Không đánh dấu hoàn thành vì chỉ có file hoặc build thành công; chỉ sửa và kiểm chứng bước đang làm.

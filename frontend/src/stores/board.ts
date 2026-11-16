@@ -1,46 +1,78 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   emptyDocument,
+  getVisibleOperations,
+  normalizeDocument,
+  PROTOCOL_VERSION,
   WIDTH,
   HEIGHT,
   type Operation,
-  type DrawingDocument,
+  type DrawingDocumentV2,
+  type DrawingEvent,
   type Room,
 } from '../drawing/model'
-import { getToken } from '../services/auth'
+import { getToken, SignInRequiredError } from '../services/auth'
 import { WS_URL } from '../services/api'
 
 interface RoomSession {
   room: Room | null
-  document: DrawingDocument
+  document: DrawingDocumentV2
   sequence: number
-  pending: Record<string, Operation>
-  rejected: Operation[]
+  pending: Record<string, DrawingEvent>
+  hasSaveError: boolean
+  rejected: DrawingEvent[]
   invitationUrl: string
+}
+interface HistoryAction {
+  type: 'draw' | 'undo' | 'redo'
+  targetId: string
 }
 
 // Giữ phiên dự án theo tài khoản; bản nháp Vẽ thử nằm ở store draft riêng.
 export const useBoardStore = defineStore('board', () => {
-  const document = ref<DrawingDocument>(emptyDocument())
+  const document = ref<DrawingDocumentV2>(normalizeDocument(emptyDocument()))
   const room = ref<Room | null>(null)
   const status = ref<'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'>('idle')
   const error = ref('')
+  const hasSaveError = ref(false)
+  const authRequired = ref(false)
   const revokedRoomId = ref('')
   const sequence = ref(0)
   const members = ref<{ clientId: string; userId: string }[]>([])
-  const pending = ref<Record<string, Operation>>({})
-  const rejected = ref<Operation[]>([])
+  const pending = ref<Record<string, DrawingEvent>>({})
+  const rejected = ref<DrawingEvent[]>([])
   const previews = ref<Record<string, { clientId: string; operation: Operation; seenAt: number }>>(
     {},
   )
   const invitationUrl = ref('')
   const sessions = new Map<string, RoomSession>()
+  const undoStack = ref<string[]>([])
+  const redoStack = ref<string[]>([])
+  const historyActions = new Map<string, HistoryAction>()
   let accountId = ''
-  // Ghép thao tác đã xác nhận với nét đang chờ để người dùng thấy ngay nét vừa vẽ.
-  const operations = computed(() => [...document.value.operations, ...Object.values(pending.value)])
-  // Đếm nét đã gửi nhưng chưa được máy chủ xác nhận.
+  // Giữ lịch sử đầy đủ trong document; Canvas chỉ nhận nét đang hiện, kể cả hiệu ứng của thao tác chờ xác nhận.
+  const operations = computed(() =>
+    getVisibleOperations({
+      ...document.value,
+      operations: [...document.value.operations, ...Object.values(pending.value)],
+    }),
+  )
+  // Đếm thao tác đã gửi nhưng chưa được máy chủ xác nhận, gồm cả nét và sự kiện ẩn/hiện.
   const pendingCount = computed(() => Object.keys(pending.value).length)
+  // Chỉ chủ Cá nhân có lịch sử riêng; mọi thao tác phải lưu xong trước khi hoàn tác/làm lại.
+  const personalOwner = computed(
+    () => room.value?.ownerId === accountId && room.value?.sharingEnabled === false,
+  )
+  const historyReady = computed(
+    () =>
+      personalOwner.value &&
+      status.value === 'connected' &&
+      !pendingCount.value &&
+      !rejected.value.length,
+  )
+  const canUndo = computed(() => historyReady.value && undoStack.value.length > 0)
+  const canRedo = computed(() => historyReady.value && redoStack.value.length > 0)
   // Trích các nét tạm thời của người khác để hiển thị ở lớp xem trước.
   const remotePreviews = computed(() => Object.values(previews.value).map((item) => item.operation))
   let socket: WebSocket | undefined
@@ -52,10 +84,74 @@ export const useBoardStore = defineStore('board', () => {
   let generation = 0
   let attempt = 0
   let target = ''
+  // Bắt đầu lịch sử phiên mới khi đổi chế độ; tên/sequence đổi hoặc reconnect cùng chế độ không xóa stack.
+  watch(() => room.value?.sharingEnabled, resetHistory, { flush: 'sync' })
+  // Cảnh báo lỗi lưu chỉ hết khi các lệnh chờ đã được xử lý; lệnh bị từ chối có danh sách rejected riêng.
+  watch(
+    pendingCount,
+    (count) => {
+      if (!count) hasSaveError.value = false
+    },
+    { flush: 'sync' },
+  )
+  // Chỉ xóa lịch sử điều khiển trong RAM, giữ nguyên nét và sự kiện đã lưu trong document.
+  function resetHistory() {
+    undoStack.value = []
+    redoStack.value = []
+    historyActions.clear()
+  }
+  // Chuyển stack sau acknowledgement hoặc room.state xác nhận UUID; ACK lặp không đổi stack lần nữa.
+  function acknowledgeHistory(event: DrawingEvent) {
+    const action = historyActions.get(event.id)
+    if (!action) return
+    historyActions.delete(event.id)
+    if (!personalOwner.value) return
+    if (action.type === 'draw') {
+      if (event.type !== 'visibility') {
+        undoStack.value.push(action.targetId)
+        redoStack.value = []
+      }
+      return
+    }
+    const source = action.type === 'undo' ? undoStack : redoStack
+    const destination = action.type === 'undo' ? redoStack : undoStack
+    if (
+      event.type !== 'visibility' ||
+      event.targetId !== action.targetId ||
+      event.visible !== (action.type === 'redo') ||
+      source.value.at(-1) !== action.targetId
+    ) {
+      resetHistory()
+      return
+    }
+    source.value.pop()
+    destination.value.push(action.targetId)
+  }
+  // Gửi một sự kiện mới cho nét đầu stack; stack chỉ thay đổi khi server xác nhận, không phải lúc bấm nút.
+  function changeHistory(type: 'undo' | 'redo') {
+    if (type === 'undo' ? !canUndo.value : !canRedo.value) return
+    const targetId = (type === 'undo' ? undoStack.value : redoStack.value).at(-1)!
+    const event: DrawingEvent = {
+      id: crypto.randomUUID(),
+      type: 'visibility',
+      targetId,
+      visible: type === 'redo',
+    }
+    historyActions.set(event.id, { type, targetId })
+    if (!commit(event)) historyActions.delete(event.id)
+  }
+  // Hoàn tác nét đã được xác nhận gần nhất của lần mở editor này.
+  function undo() {
+    changeHistory('undo')
+  }
+  // Hiện lại nét vừa hoàn tác ở vị trí gốc trong lịch sử server.
+  function redo() {
+    changeHistory('redo')
+  }
   // Gửi một thông điệp đúng phiên bản giao thức khi WebSocket đang mở.
   function send(type: string, data: Record<string, unknown> = {}) {
     if (socket?.readyState !== WebSocket.OPEN) return false
-    socket.send(JSON.stringify({ v: 1, type, ...data }))
+    socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type, ...data }))
     return true
   }
   // Đóng kết nối hiện tại, hủy bộ hẹn giờ và bỏ trạng thái hiện diện tạm thời.
@@ -78,17 +174,27 @@ export const useBoardStore = defineStore('board', () => {
     members.value = []
     previews.value = {}
   }
+  // Hết phiên thì dừng mọi retry và khóa vẽ, giữ nét chờ cho cùng tài khoản; đăng xuất vẫn xóa cache.
+  function requireAuthentication() {
+    disconnect()
+    authRequired.value = true
+    status.value = 'error'
+    error.value = 'Phiên đăng nhập không còn hợp lệ. Đăng nhập lại rồi bấm Kết nối lại.'
+  }
   // Xóa phần đang hiển thị, không xóa các phiên đã giữ để mở lại dự án sau.
   function clearActive() {
+    resetHistory()
     target = ''
     room.value = null
     sequence.value = 0
     pending.value = {}
+    hasSaveError.value = false
     rejected.value = []
     invitationUrl.value = ''
-    document.value = emptyDocument()
+    document.value = normalizeDocument(emptyDocument())
     status.value = 'idle'
     error.value = ''
+    authRequired.value = false
   }
   // Giữ tối đa năm dự án gần nhất đã lưu; phiên còn nét chờ/lỗi không bị loại khỏi bộ nhớ.
   function rememberRoom() {
@@ -99,6 +205,7 @@ export const useBoardStore = defineStore('board', () => {
       document: document.value,
       sequence: sequence.value,
       pending: pending.value,
+      hasSaveError: hasSaveError.value,
       rejected: rejected.value,
       invitationUrl: invitationUrl.value,
     })
@@ -140,6 +247,7 @@ export const useBoardStore = defineStore('board', () => {
       document.value = saved.document
       sequence.value = saved.sequence
       pending.value = saved.pending
+      hasSaveError.value = saved.hasSaveError
       rejected.value = saved.rejected
       invitationUrl.value = saved.invitationUrl
     }
@@ -158,12 +266,13 @@ export const useBoardStore = defineStore('board', () => {
   function rememberInvitation(roomId: string, url: string) {
     if (target === roomId && room.value?.ownerId === accountId) invitationUrl.value = url
   }
-  // Chuẩn bị kết nối phòng; giữ nét đang chờ khi nối lại đúng phòng cũ.
+  // Lấy token mới khi chủ động kết nối lại; chỉ gửi nét chờ sau room.state của đúng phòng/tài khoản.
   async function connect(roomId: string) {
     if (target !== roomId) prepareRoom(roomId)
     else disconnect()
     attempt = 0
     error.value = ''
+    authRequired.value = false
     const current = generation
     // Trình duyệt báo offline thì đóng socket ngay và giữ nguyên tài liệu/nét chờ để nối lại cùng phòng.
     function pauseForOffline() {
@@ -229,8 +338,14 @@ export const useBoardStore = defineStore('board', () => {
           if (current !== generation || socket !== connection) return
           try {
             const message = JSON.parse(event.data)
-            if (message.v !== 1)
-              throw new Error('Phiên bản kết nối không tương thích. Vui lòng tải lại trang.')
+            if (message.v !== PROTOCOL_VERSION) {
+              // Khóa vẽ và giữ dữ liệu/nét chờ khi hai phía khác phiên bản, tránh lặp reconnect vô ích.
+              disconnect()
+              status.value = 'error'
+              error.value =
+                'Phiên bản kết nối không tương thích. Cập nhật backend rồi bấm Kết nối lại.'
+              return
+            }
             if (message.type === 'auth.ok') {
               clearTimeout(tokenTimer)
               // Làm mới token trước khi hết hạn để phiên vẽ chung tiếp tục hoạt động.
@@ -241,10 +356,11 @@ export const useBoardStore = defineStore('board', () => {
                     const fresh = await getToken(true)
                     if (current === generation && socket === connection)
                       send('auth.refresh', { token: fresh })
-                  } catch {
+                  } catch (cause) {
                     if (current === generation && socket === connection) {
-                      // Lỗi tải token có thể do mất mạng; server mới quyết định phiên đã hết hạn bằng 4401.
-                      connection.close(4000, 'Retry token refresh')
+                      // SDK không còn token thì cần đăng nhập; lỗi mạng vẫn được nối lại có backoff.
+                      if (cause instanceof SignInRequiredError) requireAuthentication()
+                      else connection.close(4000, 'Retry token refresh')
                     }
                   }
                 },
@@ -257,19 +373,30 @@ export const useBoardStore = defineStore('board', () => {
                 message.room?.id !== roomId ||
                 !Number.isSafeInteger(message.sequence) ||
                 message.sequence < 0 ||
-                message.document?.version !== 1 ||
+                ![1, 2].includes(message.document?.version) ||
                 message.document.width !== WIDTH ||
                 message.document.height !== HEIGHT ||
                 !Array.isArray(message.document.operations)
               )
                 throw new Error('Trạng thái phòng không hợp lệ. Đang thử tải lại…')
-              document.value = message.document
+              const previous = new Set(document.value.operations.map((operation) => operation.id))
+              document.value = normalizeDocument(message.document)
               sequence.value = message.sequence
               room.value = message.room
               previews.value = {}
               clearTimeout(watchdog)
               // Nét đã có trong trạng thái server được xác nhận tại chỗ; nét còn thiếu gửi lại nguyên UUID.
               const known = new Set(document.value.operations.map((operation) => operation.id))
+              for (const operation of document.value.operations) {
+                // Tab khác đổi ẩn/hiện thì bỏ lịch sử phiên cũ; tài liệu chuẩn của server luôn được giữ.
+                if (
+                  operation.type === 'visibility' &&
+                  !previous.has(operation.id) &&
+                  !pending.value[operation.id]
+                )
+                  resetHistory()
+                acknowledgeHistory(operation)
+              }
               for (const [id, operation] of Object.entries(pending.value)) {
                 if (known.has(id)) delete pending.value[id]
                 else send('operation.commit', { operation })
@@ -278,18 +405,35 @@ export const useBoardStore = defineStore('board', () => {
               attempt = 0
               error.value = ''
             } else if (message.type === 'operation.committed') {
+              if (
+                !Number.isSafeInteger(message.sequence) ||
+                message.sequence < 1 ||
+                typeof message.operation?.id !== 'string'
+              )
+                throw new Error('Invalid acknowledgement')
+              const known = document.value.operations.some(
+                (operation) => operation.id === message.operation.id,
+              )
               if (message.sequence > sequence.value) {
-                if (message.sequence !== sequence.value + 1) {
+                if (message.sequence !== sequence.value + 1 || known) {
                   socket?.close(4000, 'Resynchronize')
                   return
                 }
                 document.value.operations.push(message.operation)
                 sequence.value = message.sequence
+                if (message.operation.type === 'visibility' && !pending.value[message.operation.id])
+                  resetHistory()
+              } else if (!known) {
+                // Ack cũ không có trong lịch sử không được làm mất một thao tác chưa lưu.
+                connection.close(4000, 'Resynchronize')
+                return
               }
+              acknowledgeHistory(message.operation)
               // Chỉ bỏ nét chờ sau khi xử lý đúng sequence; nếu thiếu sequence thì giữ lại đến lúc tải lại phòng.
               delete pending.value[message.operation.id]
               delete previews.value[message.operation.id]
             } else if (message.type === 'operation.preview') {
+              if (message.operation?.type === 'visibility') throw new Error('Invalid preview')
               previews.value[message.operation.id] = {
                 clientId: message.clientId,
                 operation: message.operation,
@@ -304,19 +448,39 @@ export const useBoardStore = defineStore('board', () => {
               for (const [id, preview] of Object.entries(previews.value))
                 if (!active.has(preview.clientId)) delete previews.value[id]
             } else if (message.type === 'error') {
+              // Khóa ngay khi server từ chối phiên, không chờ frame đóng socket mới dừng nhận nét.
+              if (['AUTH_REQUIRED', 'AUTH_EXPIRED'].includes(message.code)) {
+                requireAuthentication()
+                return
+              }
               error.value = message.message
+              // Lỗi ghi không làm mất UUID hoặc nét chờ; giữ cảnh báo qua reconnect đến xác nhận thật.
+              if (
+                message.code === 'SERVICE_UNAVAILABLE' &&
+                Object.hasOwn(pending.value, message.operationId)
+              )
+                hasSaveError.value = true
               if (
                 message.operationId &&
                 pending.value[message.operationId] &&
-                ['INVALID_INPUT', 'OPERATION_CONFLICT', 'DOCUMENT_FULL'].includes(message.code)
+                [
+                  'INVALID_INPUT',
+                  'OPERATION_CONFLICT',
+                  'DOCUMENT_FULL',
+                  'OWNER_REQUIRED',
+                  'PERSONAL_MODE_REQUIRED',
+                ].includes(message.code)
               ) {
                 rejected.value.push(pending.value[message.operationId]!)
                 delete pending.value[message.operationId]
+                historyActions.delete(message.operationId)
               }
               if (['ROOM_NOT_FOUND', 'ROOM_FULL', 'JOIN_REQUIRED'].includes(message.code)) {
                 const reasons: Record<string, string> = {
                   ROOM_NOT_FOUND: 'Không tìm thấy phòng hoặc bạn chưa có quyền truy cập.',
-                  ROOM_FULL: 'Phòng đã đủ 10 kết nối. Hãy thử lại sau.',
+                  // Giới hạn tính theo tab/socket; người dùng chủ động nối lại sau khi có chỗ trống.
+                  ROOM_FULL:
+                    'Dự án đã đủ 10 kết nối, mỗi tab vẽ tính một kết nối. Chờ người khác rời đi hoặc đóng bớt tab vẽ rồi bấm Kết nối lại.',
                   JOIN_REQUIRED: 'Chưa tham gia kết nối phòng. Hãy kết nối lại.',
                 }
                 if (message.code === 'ROOM_NOT_FOUND') forgetRoom(roomId)
@@ -343,50 +507,75 @@ export const useBoardStore = defineStore('board', () => {
             return
           }
           if (event.code === 4401) {
-            reset()
-            status.value = 'error'
-            error.value = 'Phiên đăng nhập đã hết hạn. Đăng nhập lại rồi kết nối.'
+            requireAuthentication()
             return
           }
           retry()
         }
-      } catch {
+      } catch (cause) {
         // Token của phiên cũ có thể trả lỗi sau khi đã chuyển phòng hoặc đăng xuất; bỏ qua kết quả đó.
         if (current !== generation) return
-        retry()
+        if (cause instanceof SignInRequiredError) requireAuthentication()
+        else retry()
       }
     }
     await open()
   }
-  // Chỉ gửi nét khi room.state đã được xác nhận; giữ UUID trong pending đến khi nhận acknowledgement.
-  function commit(operation: Operation) {
-    if (status.value === 'connected') {
+  // Giữ UUID đến acknowledgement và chặn nét mới khi đang phục hồi lỗi ghi của các nét chờ.
+  function commit(operation: DrawingEvent) {
+    if (status.value === 'connected' && !hasSaveError.value) {
+      if (
+        operation.type === 'visibility' &&
+        (room.value?.ownerId !== accountId ||
+          room.value.sharingEnabled ||
+          pendingCount.value ||
+          rejected.value.length)
+      )
+        return false
+      if (operation.type !== 'visibility' && personalOwner.value)
+        historyActions.set(operation.id, { type: 'draw', targetId: operation.id })
       pending.value[operation.id] = operation
       send('operation.commit', { operation })
+      return true
     }
+    return false
   }
-  // Gửi nét đang kéo để thành viên khác nhìn thấy trước khi nét được lưu.
+  // Chỉ gửi preview khi có thể vẽ; lỗi ghi đang phục hồi không nhận thêm cử chỉ mới.
   function preview(operation: Operation) {
-    if (status.value === 'connected') send('operation.preview', { operation })
+    if (status.value === 'connected' && !hasSaveError.value)
+      send('operation.preview', { operation })
   }
   // Báo cho phòng bỏ nét xem trước khi thao tác kéo bị hủy.
   function cancelPreview(operationId: string) {
     if (status.value === 'connected') send('preview.cancel', { operationId })
   }
-  // Tạo bản tài liệu gồm nét đã lưu, đang chờ và bị từ chối để người dùng có thể giữ lại.
+  // Xuất cả lịch sử gốc và thao tác chờ/lỗi, không làm mất nét bị ẩn hay sự kiện cần để khôi phục bản vẽ.
   function exportDocument() {
-    return { ...document.value, operations: [...operations.value, ...rejected.value] }
+    return {
+      ...document.value,
+      operations: [
+        ...document.value.operations,
+        ...Object.values(pending.value),
+        ...rejected.value,
+      ],
+    }
   }
   return {
     document,
     room,
     status,
     error,
+    hasSaveError,
+    authRequired,
     revokedRoomId,
     sequence,
     members,
     operations,
     pendingCount,
+    canUndo,
+    canRedo,
+    undo,
+    redo,
     rejected,
     remotePreviews,
     invitationUrl,

@@ -22,6 +22,7 @@ const user = session?.user ?? ref(null)
 const room = ref<Room | null>(null)
 const loading = ref(false)
 const error = ref('')
+const authRequired = ref(false)
 let requestVersion = 0
 
 // Chỉ cập nhật tên/thời gian của đúng dự án và chủ hiện tại, không ghi đè sequence/nét đang đồng bộ.
@@ -57,12 +58,13 @@ watch(
   { flush: 'sync' },
 )
 
-// Hiện cache ở chế độ khóa vẽ, rồi kiểm tra quyền và đồng bộ; phản hồi phiên cũ luôn bị bỏ qua.
+// Kiểm tra quyền trước khi nối lại; lỗi phiên có nút đăng nhập, lỗi mạng giữ cache và cho tải lại.
 async function loadRoom() {
   const version = ++requestVersion
   board.setAccount(isLoaded.value && isSignedIn.value ? (user.value?.id ?? '') : '')
   room.value = null
   error.value = ''
+  authRequired.value = false
   loading.value = false
   if (!isLoaded.value || !isSignedIn.value || !user.value) return
   if (typeof route.params.id !== 'string') {
@@ -89,13 +91,23 @@ async function loadRoom() {
       board.forgetRoom(roomId)
       room.value = null
     }
-    if (cause instanceof ApiError && cause.status === 404) {
+    if (cause instanceof ApiError && [403, 404].includes(cause.status ?? 0)) {
       error.value =
         'Không tìm thấy dự án hoặc bạn chưa có quyền truy cập. Hãy kiểm tra liên kết với chủ dự án.'
     } else if (cause instanceof ApiError && cause.status === 400) {
       error.value = 'Đường dẫn dự án không hợp lệ.'
     } else if (!(cause instanceof ApiError) || cause.status === 401) {
-      error.value = 'Không thể xác thực tài khoản. Vui lòng đăng nhập lại.'
+      authRequired.value = true
+      error.value = 'Không thể xác thực tài khoản. Đăng nhập lại rồi bấm Tải lại.'
+    } else if (cause.status === 429) {
+      error.value = 'Bạn gửi quá nhiều yêu cầu. Vui lòng đợi một phút rồi bấm Tải lại.'
+    } else if (cause.code === 'REQUEST_TIMEOUT') {
+      error.value = 'Máy chủ phản hồi quá lâu. Hãy chờ một chút rồi bấm Tải lại.'
+    } else if (cause.code === 'NETWORK_ERROR') {
+      error.value = 'Không kết nối được máy chủ. Kiểm tra mạng rồi bấm Tải lại.'
+    } else if (cause.status === 503 || cause.code === 'SERVICE_UNAVAILABLE') {
+      error.value =
+        'Máy chủ đang khởi động hoặc tạm thời chưa sẵn sàng. Chờ một chút rồi bấm Tải lại.'
     } else {
       error.value = 'Không tải được dự án. Kiểm tra kết nối rồi bấm Tải lại.'
     }
@@ -147,6 +159,9 @@ onBeforeUnmount(() => {
       <p v-else-if="loading" role="status">Đang tải bản vẽ…</p>
       <div v-else-if="error">
         <p class="studio-access-error" role="alert">{{ error }}</p>
+        <SignInButton v-if="authRequired" mode="modal">
+          <button class="button button-primary" type="button">Đăng nhập lại</button>
+        </SignInButton>
         <button class="button button-outline" type="button" @click="loadRoom">Tải lại</button>
       </div>
       <RouterLink class="text-link" to="/studio">Về Studio</RouterLink>

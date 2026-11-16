@@ -1,5 +1,6 @@
 export const WIDTH = 1600
 export const HEIGHT = 900
+export const PROTOCOL_VERSION = 2
 export type Tool = 'freehand' | 'line' | 'rectangle' | 'circle' | 'eraser'
 export interface Point {
   x: number

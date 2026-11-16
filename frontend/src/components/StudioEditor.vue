@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { SignInButton } from '@clerk/vue'
 import { RouterLink } from 'vue-router'
 import DrawingCanvas from './DrawingCanvas.vue'
 import RoomInvitation from './RoomInvitation.vue'
 import RenameProjectForm from './RenameProjectForm.vue'
-import type { Operation, Room, Tool } from '../drawing/model'
+import { getVisibleOperations, type Operation, type Room, type Tool } from '../drawing/model'
 import { useBoardStore } from '../stores/board'
 import { useDraftStore } from '../stores/draft'
 import { useDrawingStore } from '../stores/drawing'
@@ -32,20 +33,35 @@ const draft = useDraftStore()
 const drawing = useDrawingStore()
 // Bản nháp và dự án có dữ liệu riêng nhưng cùng dùng renderer và các công cụ.
 const operations = computed(() => (isProject.value ? board.operations : draft.document.operations))
-// Chỉ mở Canvas và thanh công cụ dự án sau khi đã nhận room.state từ server.
-const canDraw = computed(() => !isProject.value || board.status === 'connected')
-// Phân biệt rõ nét đang chờ với nét đã được server xác nhận.
+// Chỉ vẽ khi đã đồng bộ và không còn lỗi ghi đang phục hồi; nét chờ vẫn được giữ trên Canvas.
+const canDraw = computed(
+  () => !isProject.value || (board.status === 'connected' && !board.hasSaveError),
+)
+// Bản nháp dùng lịch sử local; dự án chỉ cho chủ ở chế độ Cá nhân dùng lịch sử đã xác nhận.
+const historyAvailable = computed(
+  () => !isProject.value || (props.isOwner && !props.room?.sharingEnabled),
+)
+const canUndo = computed(() =>
+  isProject.value ? historyAvailable.value && board.canUndo : draft.canUndo,
+)
+const canRedo = computed(() =>
+  isProject.value ? historyAvailable.value && board.canRedo : draft.canRedo,
+)
+// Có kết nối chưa có nghĩa là đã lưu: lỗi ghi giữ cảnh báo đến khi server xác nhận các nét chờ.
 const saveStatus = computed(() => {
   if (!isProject.value) return 'Bản nháp trong phiên hiện tại'
-  if (board.pendingCount) return `Đang chờ xác nhận ${board.pendingCount} nét…`
-  if (board.rejected.length) return `Có ${board.rejected.length} nét chưa được lưu`
+  if (board.hasSaveError)
+    return `Chưa xác nhận lưu ${board.pendingCount} thao tác; đang giữ trong trang để thử lại.`
+  if (board.pendingCount) return `Đang chờ xác nhận ${board.pendingCount} thao tác…`
+  if (board.rejected.length) return `Có ${board.rejected.length} thao tác chưa được lưu`
+  if (board.authRequired) return 'Đăng nhập lại để tiếp tục vẽ'
   if (board.status === 'connected') return 'Đã lưu các nét hiện có'
   if (board.status === 'error') return 'Chưa kết nối được. Hãy thử lại.'
   return 'Đang kết nối và tải bản vẽ…'
 })
-// Đếm các thao tác đã lưu trong bản vẽ để cập nhật nhãn phía trên canvas.
+// Chỉ đếm nét đang hiện đã được xác nhận; sự kiện ẩn/hiện và nét bị ẩn không làm tăng nhãn số nét.
 const operationCount = computed(() =>
-  isProject.value ? board.document.operations.length : draft.document.operations.length,
+  isProject.value ? getVisibleOperations(board.document).length : draft.document.operations.length,
 )
 // Thanh trượt đọc và ghi cỡ của công cụ đang chọn; bút và tẩy giữ giá trị riêng.
 const activeSize = computed({
@@ -65,11 +81,18 @@ const toolStatus = computed(() =>
 )
 // Lời nhắc giải thích trạng thái lịch sử thay đổi ngay khi vẽ, hoàn tác hoặc làm lại.
 const historyHint = computed(() => {
-  if (isProject.value)
-    return 'Hoàn tác/làm lại hiện chỉ hỗ trợ bản vẽ thử, chưa áp dụng cho dự án tự lưu.'
-  if (!draft.canUndo && !draft.canRedo) return 'Chưa có nét vẽ để hoàn tác. Hãy vẽ lên canvas.'
-  if (!draft.canUndo) return 'Đã hoàn tác hết nét vẽ. Bạn có thể làm lại.'
-  if (!draft.canRedo) return 'Chưa có thao tác để làm lại. Hãy hoàn tác một nét trước.'
+  if (isProject.value) {
+    if (!historyAvailable.value) return 'Hoàn tác/làm lại chỉ dành cho chủ dự án ở chế độ Cá nhân.'
+    if (!canDraw.value) return 'Kết nối lại để dùng hoàn tác/làm lại.'
+    if (board.pendingCount) return 'Chờ máy chủ xác nhận thao tác trước khi hoàn tác/làm lại.'
+    if (board.rejected.length)
+      return 'Có thao tác chưa lưu. Hãy kiểm tra thông báo lỗi trước khi tiếp tục.'
+    if (!canUndo.value && !canRedo.value)
+      return 'Chỉ hoàn tác nét mới trong lần mở này. Hãy vẽ thêm.'
+  }
+  if (!canUndo.value && !canRedo.value) return 'Chưa có nét vẽ để hoàn tác. Hãy vẽ lên canvas.'
+  if (!canUndo.value) return 'Đã hoàn tác hết nét vẽ. Bạn có thể làm lại.'
+  if (!canRedo.value) return 'Chưa có thao tác để làm lại. Hãy hoàn tác một nét trước.'
   return 'Bạn có thể hoàn tác hoặc làm lại.'
 })
 const actionFeedback = ref('')
@@ -102,18 +125,20 @@ function showActionFeedback(message: string) {
   })
 }
 
-// Hoàn tác nét vẽ cuối cùng khi lịch sử còn thao tác và báo kết quả.
+// Bản nháp hoàn tác ngay; dự án gửi sự kiện ẩn nét và chờ xác nhận trước khi báo đã lưu.
 function undoStroke() {
-  if (isProject.value || !draft.canUndo) return
-  draft.undo()
-  showActionFeedback('Đã hoàn tác một nét vẽ.')
+  if (!canUndo.value) return
+  if (isProject.value) board.undo()
+  else draft.undo()
+  showActionFeedback(isProject.value ? 'Đang gửi yêu cầu hoàn tác…' : 'Đã hoàn tác một nét vẽ.')
 }
 
 // Khôi phục nét vừa hoàn tác khi lịch sử làm lại còn thao tác.
 function redoStroke() {
-  if (isProject.value || !draft.canRedo) return
-  draft.redo()
-  showActionFeedback('Đã làm lại một nét vẽ.')
+  if (!canRedo.value) return
+  if (isProject.value) board.redo()
+  else draft.redo()
+  showActionFeedback(isProject.value ? 'Đang gửi yêu cầu làm lại…' : 'Đã làm lại một nét vẽ.')
 }
 
 // Xử lý phím chọn công cụ và hoàn tác/làm lại khi người dùng không nhập văn bản.
@@ -134,18 +159,15 @@ function handleToolShortcut(event: KeyboardEvent) {
     return
   const key = event.key.toLowerCase()
   if ((event.ctrlKey || event.metaKey) && !event.altKey) {
-    if (isProject.value && (key === 'z' || key === 'y')) {
-      event.preventDefault()
-      showActionFeedback(historyHint.value)
-      return
-    }
     // Ctrl+Z hoàn tác; Ctrl+Y hoặc Ctrl+Shift+Z làm lại nét vừa hoàn tác.
     if (key === 'z' && !event.shiftKey) {
       event.preventDefault()
-      undoStroke()
+      if (canUndo.value) undoStroke()
+      else showActionFeedback(historyHint.value)
     } else if ((key === 'y' && !event.shiftKey) || (key === 'z' && event.shiftKey)) {
       event.preventDefault()
-      redoStroke()
+      if (canRedo.value) redoStroke()
+      else showActionFeedback(historyHint.value)
     }
     return
   }
@@ -349,6 +371,9 @@ function commitStroke(operation: Operation) {
       <span>{{ isOwner ? 'Bạn là chủ dự án.' : 'Bạn đang cùng chỉnh sửa.' }}</span>
       <span role="status">{{ saveStatus }}</span>
       <span v-if="board.error" class="studio-project-error">{{ board.error }}</span>
+      <SignInButton v-if="board.authRequired" mode="modal">
+        <button class="button button-primary" type="button">Đăng nhập lại</button>
+      </SignInButton>
       <button
         v-if="board.status === 'error'"
         class="button button-outline"
@@ -502,14 +527,14 @@ function commitStroke(operation: Operation) {
             </div>
             <!-- Hai nút dùng chung lịch sử với phím tắt và tự khóa khi không còn thao tác phù hợp. -->
             <div
-              v-if="!isProject"
+              v-if="historyAvailable"
               class="studio-history-actions"
               role="group"
               aria-label="Lịch sử bản vẽ"
             >
               <button
                 type="button"
-                :disabled="!draft.canUndo"
+                :disabled="!canUndo"
                 aria-describedby="studio-history-hint"
                 aria-keyshortcuts="Control+Z Meta+Z"
                 @click="undoStroke"
@@ -518,7 +543,7 @@ function commitStroke(operation: Operation) {
               </button>
               <button
                 type="button"
-                :disabled="!draft.canRedo"
+                :disabled="!canRedo"
                 aria-describedby="studio-history-hint"
                 aria-keyshortcuts="Control+Y Control+Shift+Z Meta+Shift+Z"
                 @click="redoStroke"

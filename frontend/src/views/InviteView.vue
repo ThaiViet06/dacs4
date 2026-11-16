@@ -15,17 +15,19 @@ const isSignedIn = session?.isSignedIn ?? ref(false)
 const user = session?.user ?? ref(null)
 const joining = ref(false)
 const error = ref('')
+const recovery = ref<'retry' | 'sign-in' | 'new-link'>('retry')
 let requestVersion = 0
 
 // Kiểm tra nhanh định dạng link để không yêu cầu đăng nhập hoặc gọi API cho URL rõ ràng bị sai.
 const token = computed(() => (typeof route.params.token === 'string' ? route.params.token : ''))
 const validToken = computed(() => /^[A-Za-z0-9_-]{43}$/.test(token.value))
 
-// Khi phiên/link đổi, bỏ phản hồi cũ và tự tham gia nếu Clerk đã sẵn sàng với một tài khoản hợp lệ.
+// Phiên/link mới bỏ trạng thái lỗi cũ để lời mời mới được kiểm tra lại khi Clerk sẵn sàng.
 function joinWhenReady() {
   requestVersion++
   joining.value = false
   error.value = ''
+  recovery.value = 'retry'
   void acceptInvitation()
 }
 
@@ -37,13 +39,21 @@ watch([isLoaded, isSignedIn, () => user.value?.id, token], joinWhenReady, {
 // Không điều hướng từ phản hồi cũ nếu người dùng đã rời trang lời mời.
 onBeforeUnmount(() => requestVersion++)
 
-// Tự kiểm tra lời mời hoặc thử lại sau lỗi; chặn gửi trùng và chỉ mở Canvas sau khi backend xác nhận thành viên.
+// Chỉ thử lại lỗi tạm thời; link bị server vô hiệu phải được thay, không gửi lặp cùng link hỏng.
 async function acceptInvitation() {
-  if (!isLoaded.value || !isSignedIn.value || !user.value || !validToken.value || joining.value)
+  if (
+    !isLoaded.value ||
+    !isSignedIn.value ||
+    !user.value ||
+    !validToken.value ||
+    joining.value ||
+    recovery.value === 'new-link'
+  )
     return
   const version = ++requestVersion
   joining.value = true
   error.value = ''
+  recovery.value = 'retry'
   try {
     const result = await joinRoom(token.value)
     if (version !== requestVersion) return
@@ -51,11 +61,17 @@ async function acceptInvitation() {
     await router.replace({ name: 'studio-project', params: { id: result.room.id } })
   } catch (cause) {
     if (version !== requestVersion) return
-    if (cause instanceof ApiError && (cause.status === 400 || cause.status === 404)) {
+    if (
+      cause instanceof ApiError &&
+      (cause.code === 'INVITATION_INVALID' ||
+        (cause.status === 400 && cause.code === 'INVALID_INPUT'))
+    ) {
+      recovery.value = 'new-link'
       error.value =
         'Link không hợp lệ, đã được thay hoặc dự án đã tắt chia sẻ. Hãy xin link mới từ chủ dự án.'
     } else if (!(cause instanceof ApiError) || cause.status === 401) {
-      error.value = 'Không thể xác thực tài khoản. Vui lòng đăng nhập lại.'
+      recovery.value = 'sign-in'
+      error.value = 'Không thể xác thực tài khoản. Đăng nhập lại rồi bấm Thử lại.'
     } else if (cause.status === 429) {
       error.value = 'Bạn gửi quá nhiều yêu cầu. Vui lòng đợi một phút rồi thử lại.'
     } else {
@@ -77,7 +93,7 @@ async function acceptInvitation() {
       <p class="eyebrow">LỜI MỜI VẼ CHUNG</p>
       <h1>Mở bản vẽ được chia sẻ.</h1>
       <p v-if="!validToken" class="invite-error" role="alert">
-        Đường dẫn lời mời không hợp lệ. Hãy xin lại link đầy đủ từ chủ phòng.
+        Đường dẫn lời mời không hợp lệ. Hãy xin lại link đầy đủ từ chủ dự án.
       </p>
       <p v-else-if="!clerkPublishableKey" role="status">
         Đăng nhập chưa được cấu hình. Chưa thể mở dự án lúc này.
@@ -94,9 +110,19 @@ async function acceptInvitation() {
       <p v-else-if="joining" role="status">Đang xác nhận lời mời và mở bản vẽ…</p>
       <div v-else-if="error">
         <p class="invite-error" role="alert">{{ error }}</p>
-        <button class="button button-primary" type="button" @click="acceptInvitation">
-          Thử lại
-        </button>
+        <div class="invite-actions">
+          <SignInButton v-if="recovery === 'sign-in'" mode="modal">
+            <button class="button button-primary" type="button">Đăng nhập lại</button>
+          </SignInButton>
+          <button
+            v-if="recovery !== 'new-link'"
+            class="button button-outline"
+            type="button"
+            @click="acceptInvitation"
+          >
+            Thử lại
+          </button>
+        </div>
       </div>
       <p v-else role="status">Đang chờ phiên đăng nhập để mở bản vẽ…</p>
       <RouterLink class="text-link invite-back" to="/studio">Về Studio</RouterLink>
@@ -120,6 +146,12 @@ async function acceptInvitation() {
 }
 .invite-card .invite-error {
   color: #9b473c;
+}
+.invite-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 .button {
   min-height: 44px;
