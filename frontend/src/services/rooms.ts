@@ -1,5 +1,5 @@
 import type { Room } from '../drawing/model'
-import { api } from './api'
+import { ApiError, api } from './api'
 
 interface CreateRoomResponse {
   room: Room
@@ -44,6 +44,13 @@ export function renameRoom(roomId: string, title: string): Promise<{ room: Room 
   return api<{ room: Room }>(`/rooms/${encodeURIComponent(roomId)}`, 'PATCH', {
     title: title.trim(),
   })
+}
+
+// Chỉ xác nhận xóa khi API đã trả đúng ID dự án sau khi lưu thay đổi.
+export async function deleteRoom(roomId: string): Promise<void> {
+  const result = await api<{ id: string }>(`/rooms/${encodeURIComponent(roomId)}`, 'DELETE')
+  if (result.id !== roomId.toLowerCase())
+    throw new ApiError('SERVICE_UNAVAILABLE', 'The server did not confirm project deletion.')
 }
 
 // Chỉ gọi sau xác nhận đổi link cũ; server giữ nét/thành viên và trả cùng token nếu gửi lại.

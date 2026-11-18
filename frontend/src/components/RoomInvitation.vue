@@ -11,12 +11,15 @@ import {
 } from '../services/rooms'
 import { useBoardStore } from '../stores/board'
 
-const props = defineProps<{ room: Room; disabled?: boolean }>()
+const props = defineProps<{ room: Room; disabled?: boolean; blockedReason?: string }>()
 const emit = defineEmits<{ changed: [room: Room]; busy: [value: boolean] }>()
 const router = useRouter()
 const board = useBoardStore()
-// Link theo phiên dự án trong Pinia nên đóng hộp hoặc chuyển trang không làm mất link đã tạo.
-const invitationUrl = computed(() => (board.room?.id === props.room.id ? board.invitationUrl : ''))
+// Khi mở từ danh sách Studio chưa có phiên Canvas, hộp thoại giữ link riêng để sao chép.
+const localInvitationUrl = ref('')
+const invitationUrl = computed(
+  () => localInvitationUrl.value || (board.room?.id === props.room.id ? board.invitationUrl : ''),
+)
 const enabled = ref(false)
 const loading = ref(false)
 const loaded = ref(false)
@@ -36,7 +39,8 @@ watch(busy, (value) => emit('busy', value), { immediate: true, flush: 'sync' })
 // Lắp URL từ route của ứng dụng và giữ trong đúng phiên chủ dự án, không lưu token vào localStorage.
 function rememberLink(token: string) {
   const path = router.resolve({ name: 'invite', params: { token } }).href
-  board.rememberInvitation(props.room.id, new URL(path, window.location.origin).href)
+  localInvitationUrl.value = new URL(path, window.location.origin).href
+  board.rememberInvitation(props.room.id, localInvitationUrl.value)
 }
 
 // Chỉ dùng trạng thái server xác nhận; tắt xóa link, bật mới nhận lại đúng token hiện tại.
@@ -45,8 +49,10 @@ function applyState(state: SharingState, room?: Room) {
   legacyLink.value = state.enabled && !state.inviteToken
   if (room || state.enabled !== props.room.sharingEnabled)
     emit('changed', room ?? { ...props.room, sharingEnabled: state.enabled })
-  if (!state.enabled) board.rememberInvitation(props.room.id, '')
-  else if (state.inviteToken) rememberLink(state.inviteToken)
+  if (!state.enabled) {
+    localInvitationUrl.value = ''
+    board.rememberInvitation(props.room.id, '')
+  } else if (state.inviteToken) rememberLink(state.inviteToken)
 }
 
 // Chuyển lỗi công khai thành hướng dẫn; không đưa token hay thông báo nội bộ lên giao diện.
@@ -71,6 +77,7 @@ async function loadSharing() {
   confirmLinkUpgrade.value = false
   error.value = ''
   copyStatus.value = ''
+  localInvitationUrl.value = ''
   try {
     const state = await getRoomSharing(props.room.id)
     if (version !== requestVersion) return
@@ -88,7 +95,7 @@ watch(() => props.room.id, loadSharing, { immediate: true, flush: 'sync' })
 // Không cập nhật link hoặc thông báo của phòng cũ sau khi đăng xuất hay rời trang.
 onBeforeUnmount(() => requestVersion++)
 
-// Bật ngay khi hợp lệ; chuyển về Cá nhân cần xác nhận vì sẽ thu quyền và ngắt người đang cộng tác.
+// Kiểm tra khóa hiện tại mỗi lần chọn; về Cá nhân cần xác nhận vì sẽ thu quyền người đang cộng tác.
 function chooseMode(nextEnabled: boolean) {
   if (!loaded.value || busy.value || props.disabled || nextEnabled === enabled.value) return
   if (!nextEnabled) {
@@ -97,7 +104,7 @@ function chooseMode(nextEnabled: boolean) {
   } else void updateSharing(true)
 }
 
-// Gửi đúng một PATCH, giữ chế độ cũ khi lỗi và chỉ đổi nhãn/card sau xác nhận của server.
+// Kiểm tra lại khóa lúc xác nhận vì có thể vừa mất mạng; chỉ đổi nhãn/card sau khi PATCH được xác nhận.
 async function updateSharing(nextEnabled: boolean) {
   if (!loaded.value || busy.value || props.disabled || nextEnabled === enabled.value) return
   const version = ++requestVersion
@@ -185,7 +192,7 @@ async function copyLink() {
     </button>
     <template v-if="loaded">
       <p v-if="disabled" class="invitation-note" role="status">
-        Chỉ đổi chế độ khi đã kết nối và không còn nét chờ hoặc lỗi lưu.
+        {{ blockedReason || 'Chỉ đổi chế độ khi đã kết nối và không còn nét chờ hoặc lỗi lưu.' }}
       </p>
       <fieldset class="sharing-modes" :disabled="busy || disabled">
         <legend>Chọn chế độ dự án</legend>

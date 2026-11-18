@@ -5,6 +5,8 @@ import { createRequire } from 'node:module'
 import { createPinia, setActivePinia } from 'pinia'
 import ts from 'typescript'
 import * as model from '../src/drawing/model.ts'
+import * as codec from '../src/drawing/codec.ts'
+import * as chatModel from '../src/chat/model.ts'
 
 const require = createRequire(import.meta.url)
 const source = readFileSync(new URL('../src/stores/board.ts', import.meta.url), 'utf8')
@@ -13,6 +15,50 @@ const compiled = ts.transpileModule(source, {
 }).outputText
 const roomId = '00000000-0000-4000-8000-000000000001'
 const otherRoomId = '00000000-0000-4000-8000-000000000002'
+
+// Chat không được thay đổi sequence/tài liệu nét vẽ hoặc nhận nội dung từ dự án khác.
+test('shared chat events are scoped to the joined room and never modify drawing state', async (context) => {
+  const { board, socket } = await connectedProject(context, { shared: true })
+  const before = JSON.stringify(board.document)
+  const sequence = board.sequence
+  const message = {
+    id: crypto.randomUUID(),
+    roomId,
+    authorId: 'member',
+    sequence: 9,
+    text: 'Chào bạn',
+    createdAt: '2026-11-17T03:00:00.000Z',
+  }
+  socket.receive({ type: 'chat.message', message })
+  assert.deepEqual(board.lastChatMessage, message)
+  assert.equal(board.sequence, sequence)
+  assert.equal(JSON.stringify(board.document), before)
+  socket.receive({ type: 'chat.message', message: { ...message, roomId: otherRoomId } })
+  socket.receive({ type: 'chat.message', message: { ...message, text: 'x'.repeat(1001) } })
+  assert.deepEqual(board.lastChatMessage, message)
+  socket.close(1006)
+  assert.equal(board.lastChatMessage, null)
+})
+
+// Dự án Cá nhân hoặc tài khoản mới không được giữ thông điệp chat của phiên cũ.
+test('personal projects reject chat events and switching accounts clears the last message', async (context) => {
+  const { board, socket } = await connectedProject(context, { shared: false })
+  const message = {
+    id: crypto.randomUUID(),
+    roomId,
+    authorId: 'member',
+    sequence: 1,
+    text: 'Riêng tư',
+    createdAt: '2026-11-17T03:00:00.000Z',
+  }
+  socket.receive({ type: 'chat.message', message })
+  assert.equal(board.lastChatMessage, null)
+  board.room.sharingEnabled = true
+  socket.receive({ type: 'chat.message', message })
+  assert.deepEqual(board.lastChatMessage, message)
+  board.setAccount('another-account')
+  assert.equal(board.lastChatMessage, null)
+})
 
 // Kiểu lỗi này chỉ biểu thị SDK xác nhận không có phiên, không dùng cho lỗi mạng tạm thời.
 class SignInRequiredError extends Error {}
@@ -59,6 +105,8 @@ function setup(context, getToken = async () => 'test-session') {
   }
   const dependencies = {
     '../drawing/model': model,
+    '../drawing/codec': codec,
+    '../chat/model': chatModel,
     '../services/auth': { getToken, SignInRequiredError },
     '../services/api': { WS_URL: 'ws://test.invalid/ws' },
   }
@@ -122,6 +170,57 @@ async function connectedProject(context, { accountId = 'test-owner', shared = fa
   socket.receive(state)
   return { ...session, socket, state }
 }
+
+test('compact acknowledgements and reconnect deltas reconcile pending strokes in server order', async (context) => {
+  const { board, sockets } = setup(context)
+  board.setAccount('test-owner')
+  await board.connect(roomId)
+  const [first] = sockets
+  first.open()
+  const auth = { type: 'auth.ok', drawingSync: true, expiresAt: Date.now() + 60000 }
+  first.receive(auth)
+  assert.deepEqual(first.sent.at(-1), { v: 2, type: 'room.join', roomId, sync: {} })
+  const initial = roomState()
+  first.receive(initial)
+  const original = initial.document.operations[0]
+  const local = { ...original, id: crypto.randomUUID() }
+  assert.equal(board.commit(local), true)
+  assert.deepEqual(first.sent.at(-1), {
+    v: 2,
+    type: 'operation.packed',
+    id: local.id,
+    packed: codec.encodeStroke(local),
+  })
+  first.receive({ type: 'operation.ack', id: local.id, seq: 1 })
+  assert.equal(board.pendingCount, 0)
+  assert.deepEqual(board.confirmedOperations, [original, local])
+  const pending = { ...original, id: crypto.randomUUID() }
+  const remote = { ...original, id: crypto.randomUUID() }
+  board.commit(pending)
+  first.close(1006)
+  await board.connect(roomId)
+  const second = sockets.at(-1)
+  second.open()
+  second.receive(auth)
+  assert.deepEqual(second.sent.at(-1).sync, { lastSeq: 1, snapshot: false })
+  second.receive({
+    type: 'room.sync',
+    room: initial.room,
+    sequence: 3,
+    after: 1,
+    epoch: 0,
+    snapshot: null,
+    events: [remote, pending].map((operation, index) => ({
+      sequence: index + 2,
+      id: operation.id,
+      packed: codec.encodeStroke(operation),
+    })),
+  })
+  assert.deepEqual(board.confirmedOperations, [original, local, remote, pending])
+  assert.equal(board.pendingCount, 0)
+  assert.equal(board.status, 'connected')
+  assert.equal(board.sequence, 3)
+})
 
 // Dùng UUID riêng cho mỗi lần ẩn/hiện, giữ UUID nét làm đích xuyên qua reconnect và cache.
 function visibility(targetId, visible = false) {
@@ -397,7 +496,7 @@ test('v2 normalizes legacy state and renders visibility in order without losing 
   socket.receive({ type: 'operation.committed', sequence: 1, operation: hidden })
   assert.deepEqual(board.operations, [])
   assert.deepEqual(board.document.operations, [original, hidden])
-  assert.deepEqual(board.exportDocument().operations, [original, hidden])
+  assert.deepEqual((await board.exportDocument()).operations, [original, hidden])
   const shown = visibility(original.id, true)
   socket.receive({ type: 'operation.committed', sequence: 2, operation: shown })
   socket.receive({ type: 'operation.committed', sequence: 2, operation: shown, duplicate: true })
@@ -419,7 +518,7 @@ test('v2 state can begin with hidden strokes and exports retain history plus pen
   const next = { ...original, id: crypto.randomUUID() }
   board.commit(next)
   assert.deepEqual(board.operations, [next])
-  assert.deepEqual(board.exportDocument().operations, [original, hidden, next])
+  assert.deepEqual((await board.exportDocument()).operations, [original, hidden, next])
 })
 
 test('pending visibility is optimistic until acknowledged and permission errors restore the drawing', async (context) => {
@@ -436,7 +535,7 @@ test('pending visibility is optimistic until acknowledged and permission errors 
     assert.equal(board.pendingCount, 0)
     assert.deepEqual(board.operations, [original])
     assert.deepEqual(board.rejected, [hidden])
-    assert.deepEqual(board.exportDocument().operations, [original, hidden])
+    assert.deepEqual((await board.exportDocument()).operations, [original, hidden])
   }
 })
 
@@ -1223,6 +1322,8 @@ for (const saved of [false, true]) {
     board.commit(operation)
     const lateMessage = sockets[0].onmessage
     board.leaveRoom()
+    assert.equal(board.hasUnsavedChanges(roomId), true)
+    assert.equal(board.hasUnsavedChanges(otherRoomId), false)
     assert.equal(sockets[0].readyState, 3)
     assert.equal(timers.size, 0)
     board.prepareRoom(otherRoomId)
@@ -1344,28 +1445,34 @@ test('cache eviction preserves projects that still have unacknowledged work', as
   assert.equal(board.prepareRoom('finished-6').id, 'finished-6')
 })
 
-// Thu quyền khác mất mạng: xóa đúng phiên, dừng mọi timer/retry và không phục hồi nội dung khi quay lại.
-test('4403 revocation clears room data and cached sessions without reconnecting', async (context) => {
-  const { board, sockets, timers } = setup(context)
-  await board.connect(roomId)
-  sockets[0].open()
-  sockets[0].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
-  sockets[0].receive(roomState())
-  board.commit(roomState().document.operations[0])
-  board.leaveRoom()
-  board.prepareRoom(roomId)
-  await board.connect(roomId)
-  sockets[1].open()
-  sockets[1].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
-  sockets[1].receive(roomState())
-  sockets[1].close(4403)
-  assert.equal(board.revokedRoomId, roomId)
-  assert.equal(board.status, 'error')
-  assert.equal(board.room, null)
-  assert.equal(board.document.operations.length, 0)
-  assert.equal(board.pendingCount, 0)
-  assert.equal(timers.size, 0)
-  board.leaveRoom()
-  assert.equal(board.prepareRoom(roomId), null)
-  assert.equal(board.revokedRoomId, '')
-})
+// Khi quyền kết thúc, xóa đúng phiên, dừng retry và không phục hồi nội dung khi quay lại.
+for (const [code, reason] of [
+  [4403, /tắt chia sẻ/],
+  [4404, /đã bị xóa/],
+]) {
+  test(`${code} clears room data and cached sessions without reconnecting`, async (context) => {
+    const { board, sockets, timers } = setup(context)
+    await board.connect(roomId)
+    sockets[0].open()
+    sockets[0].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+    sockets[0].receive(roomState())
+    board.commit(roomState().document.operations[0])
+    board.leaveRoom()
+    board.prepareRoom(roomId)
+    await board.connect(roomId)
+    sockets[1].open()
+    sockets[1].receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+    sockets[1].receive(roomState())
+    sockets[1].close(code)
+    assert.equal(board.revokedRoomId, roomId)
+    assert.match(board.error, reason)
+    assert.equal(board.status, 'error')
+    assert.equal(board.room, null)
+    assert.equal(board.document.operations.length, 0)
+    assert.equal(board.pendingCount, 0)
+    assert.equal(timers.size, 0)
+    board.leaveRoom()
+    assert.equal(board.prepareRoom(roomId), null)
+    assert.equal(board.revokedRoomId, '')
+  })
+}

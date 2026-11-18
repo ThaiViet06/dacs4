@@ -103,7 +103,21 @@ function messageSchema(value) {
     object(value, ["v", "type", "token"]);
     ensure(typeof value.token === "string" && value.token.length > 0 && value.token.length <= 8192);
   } else if (value.type === "room.join") {
-    object(value, ["v", "type", "roomId"]); uuidSchema(value.roomId);
+    object(value, Object.hasOwn(value, "sync") ? ["v", "type", "roomId", "sync"] : ["v", "type", "roomId"]);
+    uuidSchema(value.roomId);
+    if (Object.hasOwn(value, "sync")) {
+      const options = value.sync;
+      ensure(options && typeof options === "object" && !Array.isArray(options));
+      ensure(Object.keys(options).every((key) => ["lastSeq", "epoch", "snapshot", "vectorOnly"].includes(key)));
+      for (const key of ["lastSeq", "epoch"])
+        if (Object.hasOwn(options, key)) ensure(Number.isSafeInteger(options[key]) && options[key] >= 0 && options[key] <= 2147483647);
+      for (const key of ["snapshot", "vectorOnly"])
+        if (Object.hasOwn(options, key)) ensure(typeof options[key] === "boolean");
+    }
+  } else if (value.type === "operation.packed") {
+    object(value, ["v", "type", "id", "packed"]);
+    uuidSchema(value.id);
+    ensure(typeof value.packed === "string" && value.packed.length > 0 && value.packed.length <= 16404);
   } else if (["operation.preview", "operation.commit"].includes(value.type)) {
     object(value, ["v", "type", "operation"]);
     if (value.type === "operation.commit") eventSchema(value.operation);

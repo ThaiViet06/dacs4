@@ -4,12 +4,15 @@ import { storeToRefs } from 'pinia'
 import { RouterLink, useRouter } from 'vue-router'
 import { SignInButton, useUser } from '@clerk/vue'
 import CreateRoomForm from './CreateRoomForm.vue'
+import ProjectCardActions from './ProjectCardActions.vue'
 import type { Room } from '../drawing/model'
+import { useBoardStore } from '../stores/board'
 import { useProjectsStore } from '../stores/projects'
 
 const { isLoaded, isSignedIn, user } = useUser()
 const router = useRouter()
 const projects = useProjectsStore()
+const board = useBoardStore()
 const { rooms, loading, hasLoaded, error, activeGroup } = storeToRefs(projects)
 const { loadRooms } = projects
 const dateFormatter = new Intl.DateTimeFormat('vi-VN', {
@@ -45,6 +48,13 @@ watch(
 function roomCreated(room: Room) {
   projects.addCreatedRoom(room)
   void router.push({ name: 'studio-project', params: { id: room.id } })
+}
+
+// Bỏ dữ liệu đã mở và thẻ trong cache sau khi xác nhận quyền của tài khoản hiện tại.
+function roomRemoved(room: Room, message: string) {
+  if (!isSignedIn.value || user.value?.id !== room.ownerId) return
+  board.forgetRoom(room.id)
+  projects.removeRoom(room.id, message)
 }
 </script>
 
@@ -129,6 +139,13 @@ function roomCreated(room: Room) {
             <span class="project-card-open">Mở bản vẽ <span aria-hidden="true">↗</span></span>
           </div>
         </RouterLink>
+        <ProjectCardActions
+          v-if="isSignedIn && room.ownerId === user?.id"
+          :room="room"
+          @renamed="projects.updateRenamedRoom"
+          @sharing-changed="projects.updateSharedRoom"
+          @removed="roomRemoved(room, $event)"
+        />
       </li>
     </ul>
   </section>
@@ -203,6 +220,7 @@ h2 {
   padding: 0;
 }
 .project-card {
+  position: relative;
   min-width: 0;
   border: 1px solid #e0e7db;
   border-radius: 16px;

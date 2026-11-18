@@ -35,12 +35,17 @@ async function setup(context, { enabled = false, generator = shareToken } = {}) 
 
   // Chỉ hỗ trợ các truy vấn thực tế của luồng chia sẻ/đồng bộ; ghi dữ liệu chỉ được thực hiện trong transaction.
   async function query(data, sql, values = []) {
-    if (sql.startsWith("SELECT * FROM drawing.rooms WHERE id=")) return { rows: values[0] === roomId ? [structuredClone(data.room)] : [] };
-    if (sql === "SELECT * FROM drawing.rooms WHERE invite_hash=$1 FOR UPDATE") return { rows: values[0] === data.room.invite_hash ? [structuredClone(data.room)] : [] };
+    if (sql.startsWith("SELECT * FROM drawing.rooms WHERE id=")) return { rows: values[0] === roomId && data.room ? [structuredClone(data.room)] : [] };
+    if (sql === "SELECT * FROM drawing.rooms WHERE invite_hash=$1 FOR UPDATE") return { rows: data.room && values[0] === data.room.invite_hash ? [structuredClone(data.room)] : [] };
     if (sql.startsWith("SELECT user_id FROM drawing.room_members")) return { rows: values[0] === roomId && data.members.includes(values[1]) ? [{ user_id: values[1] }] : [] };
     if (sql.startsWith("SELECT payload FROM drawing.room_operations")) return { rows: data.operations.filter((row) => row.sequence <= values[1]).map(({ payload }) => ({ payload })) };
     if (sql.startsWith("SELECT sequence,payload,author_id FROM drawing.room_operations")) return { rows: data.operations.filter((row) => row.operation_id === values[1]) };
     assert.notEqual(data, stored, "Writes must use a transaction");
+    if (sql === "DELETE FROM drawing.rooms WHERE id=$1") {
+      assert.deepEqual(values, [roomId]);
+      Object.assign(data, { room: null, members: [], operations: [] });
+      return { rows: [] };
+    }
     if (sql === "UPDATE drawing.rooms SET sharing_version=$2,invite_hash=$3 WHERE id=$1 RETURNING *") {
       if (control.failAt === "update") throw Object.assign(new Error("Private fixture upgrade failure"), { code: "08006" });
       assert.equal(values[0], roomId);
@@ -271,6 +276,58 @@ for (const failAt of ["update", "delete", "commit"]) {
     assert.equal((await member.next("operation.committed")).sequence, 2);
   });
 }
+
+// Chỉ yêu cầu xóa hợp lệ của chủ mới được động đến bản vẽ và thành viên.
+test("project DELETE rejects nonowners and allows the browser CORS preflight", async (context) => {
+  const { request, path, stored, application } = await setup(context, { enabled: true });
+  const before = stored();
+  assert.equal((await request(path, undefined, null, "DELETE")).status, 401);
+  assert.equal((await request(path, undefined, "member", "DELETE")).status, 403);
+  assert.equal((await request(path, undefined, "outsider", "DELETE")).status, 404);
+  assert.equal((await request("/api/rooms/invalid", undefined, "owner", "DELETE")).status, 400);
+  assert.deepEqual(stored(), before);
+
+  const response = await fetch("http://127.0.0.1:" + application.server.address().port + path, {
+    method: "OPTIONS",
+    headers: { Origin: origin, "Access-Control-Request-Method": "DELETE",
+      "Access-Control-Request-Headers": "authorization" },
+  });
+  assert.equal(response.status, 204);
+  assert.match(response.headers.get("Access-Control-Allow-Methods"), /\bDELETE\b/);
+});
+
+// COMMIT lỗi giữ phòng đang mở, còn xóa thành công đóng cả hai socket và vô hiệu hóa link.
+test("deleting a project waits for COMMIT before disconnecting its owner and members", { timeout: 5000 }, async (context) => {
+  context.mock.method(console, "error", () => {});
+  const { request, path, roomId, stored, control, application } = await setup(context, { enabled: true });
+  const owner = await connect(context, application, "owner", roomId);
+  const member = await connect(context, application, "member", roomId.toUpperCase());
+  await Promise.all([owner.next("room.state"), member.next("room.state")]);
+  const before = stored();
+
+  control.failAt = "commit";
+  assert.equal((await request(path, undefined, "owner", "DELETE")).status, 503);
+  assert.deepEqual(stored(), before);
+  assert.equal(owner.socket.readyState, WebSocket.OPEN);
+  assert.equal(member.socket.readyState, WebSocket.OPEN);
+
+  control.failAt = "";
+  const atCommit = pauseCommit(control);
+  const response = request("/api/rooms/" + roomId.toUpperCase(), undefined, "owner", "DELETE");
+  await atCommit;
+  assert.deepEqual(stored(), before);
+  assert.equal(owner.socket.readyState, WebSocket.OPEN);
+  assert.equal(member.socket.readyState, WebSocket.OPEN);
+  const closed = Promise.all([once(owner.socket, "close"), once(member.socket, "close")]);
+  control.release();
+  const deleted = await response;
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(await deleted.json(), { id: roomId });
+  assert.deepEqual((await closed).map(([code]) => code), [4404, 4404]);
+  assert.deepEqual(stored(), { room: null, members: [], operations: [] });
+  assert.equal((await request(path)).status, 404);
+  assert.equal((await request("/api/rooms/join", { token: legacyToken }, "member")).status, 404);
+});
 
 // Thiếu/đổi nhầm khóa không được thay link âm thầm; chủ vẫn có thể tắt chia sẻ để thu quyền.
 test("missing or mismatched sharing keys fail safely while disabling remains available", async (context) => {

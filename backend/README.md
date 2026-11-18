@@ -65,6 +65,25 @@ Chạy bộ test backend độc lập với database từ `backend/`:
 npm test
 ```
 
+Kiểm thử tích hợp PostgreSQL thật, chạy riêng khi đã cấu hình `backend/.env.local`:
+
+```powershell
+npm.cmd run test:database
+```
+
+`tests/database/collaboration.test.js` tự tạo một dự án riêng với UUID/chủ giả,
+chạy API và hai client WebSocket trên cổng localhost tạm. Ca thử vẽ/undo đến
+sequence 7 → bật Chung → thành viên tham gia/vẽ → sequence 8 → khởi động lại
+server/pool test → tải lịch sử và retry cùng UUID. PostgreSQL là thật, xác thực
+dùng hai token giả chỉ có hiệu lực trong server test. Dữ liệu ca thử được dọn
+theo ID/chủ/tên riêng, kiểm tra cả bản ghi liên quan sau khi xóa.
+
+Ngày 17/11/2026, ca này đạt trên Supabase: bảy thao tác gốc giữ nguyên, cả hai
+client nhận nét mới, server/pool mới khôi phục đúng và retry không tạo nét trùng;
+dữ liệu test đã dọn. Ca Supabase chạy riêng qua `test:database`; `npm test` vẫn
+dùng test độc lập với dịch vụ ngoài. Các lần sửa code ưu tiên tự chạy kiểm thử và
+báo rõ phạm vi thật/giả trước khi cần hỗ trợ thủ công.
+
 `src/auth.js` tạo `verifySessionToken()` dùng chung cho API và WebSocket. SDK Clerk
 xác minh chữ ký, issuer, origin và thời gian; ứng dụng kiểm tra ID người dùng,
 ID phiên, hạn phiên và từ chối phiên đăng nhập còn `pending`. `server.js` kiểm tra
@@ -113,8 +132,8 @@ cũ có xác nhận, giữ thành viên đang vẽ. 9 test trong `tests/document
 tra chuyển v1/v2, lịch sử ẩn/hiện, UUID trùng/đích sai, giới hạn hình học/5 MiB và
 schema WebSocket v2. 17 test trong `tests/visibility.test.js` dùng repository
 thật với SQL giả có khóa hàng/transaction: lưu/tải lịch sử, quyền chủ/Cá nhân,
-retry/JSONB, sequence, rollback và đổi chế độ đồng thời. Tổng cộng **125 test
-backend**, không cần dịch vụ thật.
+retry/JSONB, sequence, rollback và đổi chế độ đồng thời. Cùng 11 test chat ở mục
+bên dưới và 2 test xóa dự án, `npm test` hiện đạt **142 test backend**, dùng các fixture cục bộ.
 
 `src/memory-repository.js` cung cấp `ready()`, `createRoom()`, `listRooms()` và
 `getRoom()`, `renameRoom()`, `getSharing()`, `setSharing()`, `upgradeInvitation()` cho development/test. Chủ phòng được thêm làm thành viên đầu tiên;
@@ -180,6 +199,14 @@ Thành viên dự án chung nhận 403, người ngoài/phòng không tồn tạ
 thiếu đăng nhập nhận 401, dữ liệu sai nhận 400, database lỗi nhận 503. CORS cho
 phép PATCH từ origin tin cậy. Editor đã có nút đổi tên; người dùng xác nhận tên
 editor/card và nét vẽ giữ đúng sau mở lại/F5 bằng tài khoản thật.
+
+## API xóa dự án
+
+`DELETE /api/rooms/:id` yêu cầu xác thực Clerk và quyền chủ dự án. Phản hồi
+`200 { id }` xác nhận transaction đã COMMIT. Khóa ngoại xóa các nét vẽ, thành viên
+và tin nhắn thuộc dự án. Server đóng các WebSocket của dự án với mã `4404` để
+editor trở về Studio. Test SQL giả kiểm tra quyền và rollback. Ca Chrome với
+danh tính test và Supabase thật đã đối chiếu việc xóa các bản ghi liên quan.
 
 ## API đọc trạng thái chia sẻ
 
@@ -330,3 +357,68 @@ trong kế hoạch.
 Audit ngày 2026-11-02: dependency production không có cảnh báo; audit đầy đủ còn
 2 mục moderate trong chuỗi development `nodemon → minimatch` đã tồn tại trước lần
 cài này. Việc xử lý được theo dõi trong [Plans.md](../Plans.md).
+
+## Chat trong dự án Chung
+
+Chỉ thành viên của dự án đang chia sẻ được đọc/gửi chat. `GET` và `POST` tới
+`/api/rooms/:id/messages` dùng cùng Bearer token Clerk; POST nhận `{ id, text }`
+(UUID và 1–1.000 ký tự), danh tính lấy từ token. GET trả 50 tin mới nhất theo thứ tự
+cũ đến mới. HTTP và sự kiện WebSocket `chat.message` chỉ xác nhận sau COMMIT;
+retry cùng UUID/nội dung trả lại tin cũ. Chat có sequence riêng với bản vẽ.
+
+Nội dung được mã hóa AES-256-GCM bằng `node:crypto` trước khi ghi vào
+`drawing.room_messages.ciphertext`. IV mới cho mỗi tin, tag 16 byte, AAD ràng buộc
+dự án/UUID/tác giả. Backend giải mã khi trả cho thành viên; metadata tác giả và thời
+gian không mã hóa. Truyền qua HTTPS/WSS khi triển khai; local hiện dùng HTTP/WS.
+Tham khảo [Node.js Crypto](https://nodejs.org/docs/latest-v24.x/api/crypto.html).
+
+Thiết lập trên môi trường mới, tại `backend/`:
+
+```powershell
+node scripts/migrate.js
+# Tạo một khóa riêng rồi lưu vào CHAT_ENCRYPTION_KEY trong .env.local.
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+npm.cmd run dev
+```
+
+Giữ khóa 64 ký tự hex này ổn định, tách khỏi khóa Clerk/link mời và không đưa vào
+frontend/Git. Sao lưu khóa an toàn cùng hướng dẫn khôi phục: mất hoặc đổi khóa sẽ
+không đọc được lịch sử cũ. Thiếu khóa thì chat trả 503, chức năng vẽ vẫn chạy.
+Tắt chia sẻ đóng chat/thu quyền; dữ liệu chat vẫn được giữ mã hóa cho lần chia sẻ sau.
+
+Máy local đã áp dụng migration 003, tạo khóa trong file Git ignore và kiểm tra
+schema/RLS/startup bằng backend cổng tạm. Ngày 17/11/2026, người dùng xác nhận
+hai tài khoản gửi/nhận trực tiếp và F5 giữ lịch sử sau restart. Truy vấn chỉ đọc
+đối chiếu 2 tin từ 2 tác giả trong 1 dự án; cả hai bản mã xác thực/giải mã đúng.
+Người dùng cũng xác nhận về Cá nhân ẩn chat, thành viên về Studio và URL cũ bị
+chặn; sau đó đã bật lại Chung trước lúc đối chiếu SQL. Database khi đó có 2 thành
+viên, hai bản mã giữ nguyên; phạm vi kiểm chứng được ghi trong `Plans.md`.
+`npm.cmd test` chạy cả kiểm tra mã hóa, rollback, UUID và cách ly HTTP/WebSocket
+bằng SQL giả, không cần credentials thật.
+
+## Tối ưu đồng bộ nét và chat
+
+Chạy `node scripts/migrate.js` từ `backend/` rồi khởi động lại backend để bật
+migration 004. Backend nhận commit theo UUID, gom tối đa 8 thao tác liền nhau
+trong một lô giới hạn 256 KiB. Một câu SQL cấp sequence và ghi lô vào Supabase.
+Sau COMMIT, client mới nhận ACK ngắn gồm UUID/sequence và các tab còn lại nhận
+nét đầy đủ. Preview tối đa 15 Hz đi riêng qua WebSocket và có thể bị bỏ khi
+mạng chậm. Chat dùng một câu SQL để lưu bản mã trước khi phát tin đã lưu.
+Lượt tải lịch sử dùng một câu SQL kiểm tra quyền trong cùng mốc đọc và tránh
+giữ khóa hàng trong lúc thành viên đang vẽ.
+
+Nét mới lưu dạng `bytea` khi có thể tái tạo nguyên tọa độ và màu. Codec dùng
+tọa độ ×100, delta ZigZag varint và RGB 24-bit. Nét JSONB cũ và sự kiện ẩn/hiện
+vẫn đọc được. Đặt `DRAWING_PACKED=false` nếu cần tạm giữ JSONB cho nét mới.
+Sau khi đã có dòng `bytea`, giữ backend có decoder khi rollback ứng dụng.
+
+Worker tạo PNG trong suốt 1600 × 900 sau mỗi khoảng 300 thao tác, tối đa 512 KiB
+và một ảnh mỗi dự án. Ảnh được phục vụ qua API kiểm tra thành viên. Máy khách
+nối lại gửi `lastSeq` để nhận phần đuôi theo index `(room_id, sequence)`. Cache
+RAM giữ tối đa 16 dự án, mỗi dự án 256 thao tác và 256 KiB. Khi thiếu ảnh,
+đuôi quá lớn hoặc có undo/redo ảnh hưởng nét trong ảnh, server giữ đủ vector
+để dựng lại. Bộ đếm giới hạn tài liệu 5 MiB tự khởi tạo cho dự án cũ ở lần ghi đầu.
+
+`npm.cmd run test:database` cần migration 004. Ca thử tạo dữ liệu riêng và kiểm
+tra JSONB cũ, bytea mới, ACK, bù sequence, restart, retry cùng UUID và rollback
+nguyên lô khi một thao tác không ghi được.

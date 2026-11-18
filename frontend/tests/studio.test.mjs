@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { parse, compileScript } from '@vue/compiler-sfc'
-import { createRenderer, reactive, ref, nextTick } from 'vue'
+import { computed, createRenderer, createSSRApp, h, reactive, ref, nextTick } from 'vue'
+import { renderToString } from 'vue/server-renderer'
 import { createMemoryHistory } from 'vue-router'
 import ts from 'typescript'
 import * as model from '../src/drawing/model.ts'
@@ -103,6 +104,13 @@ function setup(context, project = false, isOwner = true, sharingEnabled = true) 
     hasSaveError: false,
     authRequired: false,
     document: { operations: [{ id: 'existing-stroke' }] },
+    // Cùng hợp đồng nét đã xác nhận với store của editor.
+    get confirmedOperations() {
+      return model.getVisibleOperations(this.document)
+    },
+    get renderOperations() {
+      return this.confirmedOperations
+    },
     canUndo: true,
     canRedo: true,
     undo() {
@@ -152,8 +160,87 @@ function setup(context, project = false, isOwner = true, sharingEnabled = true) 
   )
   mounted.state.resetDialog.value = dialog()
   mounted.state.shareDialog.value = dialog()
-  return { ...mounted, board, drawing, calls, listeners, Element }
+  return { ...mounted, board, draft, drawing, room, calls, listeners, Element }
 }
+
+// Render template Vue thật để kiểm tra nút có xuất hiện hay không; các component con chỉ làm dấu nhận diện.
+async function renderProjectEditor(context, isOwner, sharingEnabled) {
+  const editor = setup(context, true, isOwner, sharingEnabled)
+  const { descriptor } = parse(
+    readFileSync(new URL('../src/components/StudioEditor.vue', import.meta.url), 'utf8'),
+    { filename: 'StudioEditor.vue' },
+  )
+  const placeholder = { render: () => null }
+  const component = loadModule(
+    compileScript(descriptor, { id: 'studio-role-render', inlineTemplate: true }).content,
+    {
+      '../drawing/model': model,
+      '../stores/board': { useBoardStore: () => editor.board },
+      '../stores/draft': { useDraftStore: () => editor.draft },
+      '../stores/drawing': { useDrawingStore: () => editor.drawing },
+      '@clerk/vue': { SignInButton: placeholder },
+      'vue-router': {
+        RouterLink: {
+          props: ['to'],
+          // Giữ liên kết và nội dung thật mà không cần khởi tạo router trong test render.
+          render() {
+            return h('a', { href: this.to }, this.$slots.default?.())
+          },
+        },
+      },
+      './DrawingCanvas.vue': {
+        __esModule: true,
+        default: {
+          props: ['enabled'],
+          inheritAttrs: false,
+          // Ghi nhận trạng thái cho phép vẽ mà không cần Canvas/DOM của trình duyệt.
+          render() {
+            return h('canvas', { 'data-drawing-enabled': String(this.enabled) })
+          },
+        },
+      },
+      './RenameProjectForm.vue': {
+        __esModule: true,
+        default: {
+          inheritAttrs: false,
+          render: () => h('button', { 'data-project-rename': '' }, 'Đổi tên'),
+        },
+      },
+      './RoomInvitation.vue': { __esModule: true, default: placeholder },
+      './ProjectChat.vue': {
+        __esModule: true,
+        default: {
+          render: () => h('section', { 'data-project-chat': '' }),
+        },
+      },
+    },
+  )
+  return renderToString(createSSRApp(component, { room: editor.room, isOwner }))
+}
+
+// Đối chiếu cả thành viên và chủ để test không đạt nhầm vì toàn bộ nút đều bị ẩn.
+test('project templates render management and history controls only for the allowed role and mode', async (context) => {
+  for (const [owner, shared] of [
+    [false, true],
+    [true, true],
+    [true, false],
+  ]) {
+    const html = await renderProjectEditor(context, owner, shared)
+    assert.equal(html.includes('data-project-rename'), owner)
+    assert.equal(html.includes('data-project-chat'), shared)
+    assert.equal(/<button\b[^>]*>\s*Chia sẻ\s*<\/button>/.test(html), owner)
+    assert.equal(html.includes('aria-keyshortcuts="Control+Z Meta+Z"'), owner && !shared)
+    assert.equal(
+      html.includes('aria-keyshortcuts="Control+Y Control+Shift+Z Meta+Shift+Z"'),
+      owner && !shared,
+    )
+    assert.ok(
+      html.includes('data-drawing-enabled="true"'),
+      JSON.stringify({ owner, shared, canvas: html.match(/<canvas[^>]*>/g) }),
+    )
+    assert.match(html, owner ? /Bạn là chủ dự án/ : /Bạn đang cùng chỉnh sửa/)
+  }
+})
 
 // Project editor không được chạy nhánh reset local hoặc làm mất kết nối/nét đã tải khi vừa mount.
 test('project Studio keeps loaded drawing and blocks local reset actions', (context) => {
@@ -283,18 +370,30 @@ test('personal project buttons and keyboard shortcuts use board history and neve
   assert.match(state.actionFeedback.value, /Đang gửi yêu cầu làm lại/)
 })
 
+// Nút và phím tắt cùng phải giữ nguyên nét cho thành viên/chủ đang cộng tác, không chạm lịch sử bản nháp.
 test('project history controls stay unavailable to members and shared owners', (context) => {
   for (const [owner, shared] of [
     [false, false],
     [false, true],
     [true, true],
   ]) {
-    const { state, calls } = setup(context, true, owner, shared)
+    const { state, board, calls, listeners } = setup(context, true, owner, shared)
+    const document = JSON.stringify(board.document)
     assert.equal(Boolean(state.historyAvailable.value), false)
     state.undoStroke()
     state.redoStroke()
+    const [keydown] = listeners
+    for (const options of [
+      { key: 'z', ctrlKey: true },
+      { key: 'y', ctrlKey: true },
+      { key: 'Z', ctrlKey: true, shiftKey: true },
+    ])
+      keydown({ ...options, target: null, preventDefault() {} })
     assert.equal(calls.projectUndo, 0)
     assert.equal(calls.projectRedo, 0)
+    assert.equal(calls.undo, 0)
+    assert.equal(calls.redo, 0)
+    assert.equal(JSON.stringify(board.document), document)
   }
 })
 
@@ -635,6 +734,58 @@ test('an HTTP authentication failure offers sign-in and only reconnects after a 
   assert.deepEqual(connects, [room.id])
 })
 
+// Chỉ lỗi quyền do backend xác nhận mới loại card; 404 từ dịch vụ trung gian vẫn có thể thử lại.
+test('confirmed missing access removes the stale Studio card while service errors retain it', async (context) => {
+  for (const code of ['ROOM_NOT_FOUND', 'SERVICE_UNAVAILABLE']) {
+    class ApiError extends Error {
+      // Giữ mã nghiệp vụ và HTTP của đúng trường hợp, không dùng thông báo lỗi để đoán quyền.
+      constructor() {
+        super('Metadata rejected')
+        this.status = 404
+        this.code = code
+      }
+    }
+    const cached = { id: 'project-a', title: 'Cached project' }
+    const removed = []
+    const { state } = mountScript(context, 'views/ProjectView.vue', {
+      '@clerk/vue': {
+        useUser: () => ({
+          isLoaded: ref(true),
+          isSignedIn: ref(true),
+          user: ref({ id: 'member' }),
+        }),
+      },
+      'vue-router': { useRoute: () => ({ params: { id: cached.id } }) },
+      '../services/clerk': { clerkPublishableKey: 'configured' },
+      '../services/api': { ApiError },
+      '../services/rooms': {
+        getRoom: async () => {
+          throw new ApiError()
+        },
+      },
+      '../stores/projects': {
+        useProjectsStore: () => ({ removeRoom: (...args) => removed.push(args) }),
+      },
+      '../stores/board': {
+        useBoardStore: () => ({
+          setAccount() {},
+          prepareRoom: () => cached,
+          leaveRoom() {},
+          forgetRoom() {},
+          connect: () => assert.fail('Rejected access cannot open a drawing connection'),
+        }),
+      },
+    })
+    await nextTick()
+    assert.equal(state.room.value, null)
+    assert.equal(removed.length, code === 'ROOM_NOT_FOUND' ? 1 : 0)
+    if (removed.length) {
+      assert.equal(removed[0][0], cached.id)
+      assert.match(removed[0][1], /Không tìm thấy dự án|quyền truy cập/)
+    }
+  }
+})
+
 test('project metadata failures discard forbidden caches and preserve service-error sessions', async (context) => {
   for (const status of [401, 403, 404, 503]) {
     class ApiError extends Error {
@@ -747,7 +898,10 @@ test('rename waits for acknowledgement and prevents duplicate requests or closin
   const saved = { ...props.room, title: 'New project title' }
   requests[0].resolve({ room: saved })
   await pending
-  assert.deepEqual(events, [{ name: 'renamed', args: [saved] }])
+  assert.deepEqual(events, [
+    { name: 'renamed', args: [saved] },
+    { name: 'closed', args: [] },
+  ])
   assert.equal(state.renameDialog.value.open, false)
   assert.equal(state.saving.value, false)
 })
@@ -770,7 +924,10 @@ test('rename errors keep the input and original title and allow retry without fa
     const retry = state.submitRename()
     requests[1].resolve({ room: { ...props.room, title: 'New title' } })
     await retry
-    assert.equal(events.length, 1)
+    assert.deepEqual(
+      events.map(({ name }) => name),
+      ['renamed', 'closed'],
+    )
   }
 })
 
@@ -934,6 +1091,95 @@ test('sharing waits for saved strokes and server acknowledgement and prevents du
   assert.equal(state.busy.value, false)
 })
 
+// Nối điều kiện computed thật của editor vào hộp chia sẻ để kiểm tra thay đổi trạng thái trực tiếp.
+test('sharing follows live editor guards and only enables after synchronization and acknowledgement', async (context) => {
+  const cases = [
+    [{ pendingCount: 2 }, /2 thao tác chờ/],
+    [{ hasSaveError: true, pendingCount: 1 }, /Có thao tác chưa lưu/],
+    [{ rejected: [{ id: 'rejected-stroke' }] }, /Có thao tác chưa lưu/],
+    [{ status: 'reconnecting' }, /kết nối và đồng bộ/],
+    [{ authRequired: true, status: 'error' }, /Đăng nhập lại/],
+  ]
+  for (const [blocked, message] of cases) {
+    const editor = setup(context, true, true, false)
+    const sharing = setupSharing(context)
+    sharing.props.disabled = computed(() => editor.state.sharingBlocked.value)
+    sharing.props.blockedReason = computed(() => editor.state.sharingBlockedReason.value)
+    sharing.reads[0].resolve({ enabled: false })
+    await nextTick()
+    const document = JSON.stringify(editor.board.document)
+    Object.assign(editor.board, blocked)
+    assert.equal(sharing.props.disabled, true)
+    assert.match(sharing.props.blockedReason, message)
+    sharing.state.chooseMode(true)
+    await sharing.state.updateSharing(true)
+    assert.equal(sharing.writes.length, 0)
+    assert.equal(sharing.state.enabled.value, false)
+    Object.assign(editor.board, {
+      status: 'connected',
+      pendingCount: 0,
+      hasSaveError: false,
+      rejected: [],
+      authRequired: false,
+    })
+    assert.equal(sharing.props.disabled, false)
+    assert.equal(sharing.props.blockedReason, '')
+    assert.equal(sharing.writes.length, 0)
+    const saving = sharing.state.updateSharing(true)
+    assert.equal(sharing.writes.length, 1)
+    assert.equal(sharing.state.enabled.value, false)
+    assert.equal(sharing.events.filter(({ name }) => name === 'changed').length, 0)
+    sharing.writes[0].resolve({
+      enabled: true,
+      room: { ...sharing.props.room, sharingEnabled: true },
+      inviteToken: 'T'.repeat(43),
+    })
+    await saving
+    assert.equal(sharing.state.enabled.value, true)
+    assert.equal(sharing.events.filter(({ name }) => name === 'changed').length, 1)
+    assert.equal(JSON.stringify(editor.board.document), document)
+  }
+})
+
+// Hộp xác nhận đã mở không được gửi khi mất mạng hoặc có nét mới đang chờ; phục hồi vẫn cần bấm xác nhận.
+test('private confirmation rechecks connectivity and pending writes before changing mode', async (context) => {
+  const editor = setup(context, true, true, true)
+  const sharing = setupSharing(context, true)
+  sharing.props.disabled = computed(() => editor.state.sharingBlocked.value)
+  sharing.props.blockedReason = computed(() => editor.state.sharingBlockedReason.value)
+  sharing.reads[0].resolve({ enabled: true, inviteToken: 'T'.repeat(43) })
+  await nextTick()
+  const link = sharing.board.invitationUrl
+  const document = JSON.stringify(editor.board.document)
+  sharing.state.chooseMode(false)
+  assert.equal(sharing.state.confirmPrivate.value, true)
+  editor.board.status = 'reconnecting'
+  await sharing.state.updateSharing(false)
+  assert.equal(sharing.writes.length, 0)
+  assert.equal(sharing.state.enabled.value, true)
+  assert.equal(sharing.board.invitationUrl, link)
+  editor.board.status = 'connected'
+  editor.board.pendingCount = 1
+  await sharing.state.updateSharing(false)
+  assert.equal(sharing.writes.length, 0)
+  editor.board.pendingCount = 0
+  assert.equal(sharing.props.disabled, false)
+  assert.equal(sharing.writes.length, 0)
+  const saving = sharing.state.updateSharing(false)
+  assert.equal(sharing.writes.length, 1)
+  assert.equal(sharing.state.enabled.value, true)
+  assert.equal(sharing.board.invitationUrl, link)
+  sharing.writes[0].resolve({
+    enabled: false,
+    room: { ...sharing.props.room, sharingEnabled: false },
+  })
+  await saving
+  assert.equal(sharing.state.enabled.value, false)
+  assert.equal(sharing.board.invitationUrl, '')
+  assert.equal(sharing.state.confirmPrivate.value, false)
+  assert.equal(JSON.stringify(editor.board.document), document)
+})
+
 test('switching to private asks for confirmation and removes the link only after success', async (context) => {
   const { state, props, board, reads, writes } = setupSharing(context, true)
   reads[0].resolve({ enabled: true, inviteToken: 'T'.repeat(43) })
@@ -1091,6 +1337,7 @@ test('sharing metadata and revocation update cards, preserve strokes and redirec
   const board = reactive({
     room: current,
     revokedRoomId: '',
+    error: '',
     setAccount() {},
     prepareRoom: () => current,
     leaveRoom() {},
@@ -1129,6 +1376,7 @@ test('sharing metadata and revocation update cards, preserve strokes and redirec
   assert.equal(updates.length, 1)
   board.revokedRoomId = 'another-project'
   assert.equal(redirects.length, 0)
+  board.error = 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.'
   board.revokedRoomId = current.id
   assert.equal(state.room.value, null)
   assert.equal(removals[0][0], current.id)

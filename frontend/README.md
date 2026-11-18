@@ -48,9 +48,9 @@ npm run build
 
 ### Kiểm tra Canvas và kết nối phòng
 
-Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 141 test
+Từ `frontend/`, chạy `npm test` (PowerShell có thể dùng `npm.cmd test`). Bộ 147 test
 dùng Node test runner: 4 test tọa độ/replay, 61 WebSocket/cache/lịch sử, 2 bản nháp,
-34 Studio/lifecycle/routing/đổi tên/chia sẻ, 10 cache danh sách, 11 lời mời,
+38 Studio/lifecycle/routing/đổi tên/chia sẻ, 12 cache danh sách, 11 lời mời,
 6 tài liệu v1/v2, 9 API và 4 helper xác thực.
 Dùng dịch vụ giả khi cần;
 không cần Clerk, Supabase hoặc backend đang chạy. Các test
@@ -129,6 +129,11 @@ chung `StudioEditor.vue`. Ctrl+Z hoàn tác; Ctrl+Y hoặc Ctrl+Shift+Z làm l�
 bản nháp hoặc dự án Cá nhân do bạn sở hữu. Ô nhập văn bản và dialog giữ phím tắt
 riêng; chế độ Chung không có điều khiển undo/redo.
 
+Test render dùng template `StudioEditor` thật với component con giả để kiểm tra
+nút theo vai trò: thành viên được vẽ, chủ được đổi tên/chia sẻ, lịch sử chỉ hiện
+cho chủ Cá nhân. Test listener kiểm tra thành viên/chủ Chung không thay nét bằng
+Ctrl+Z/Y/Shift+Z. Nghiệm thu bằng hai tài khoản thật được theo dõi trong `../Plans.md`.
+
 Lịch sử dự án chỉ gồm nét mới của lần mở editor; nét/tẩy được ẩn/hiện bằng sự
 kiện, không xóa nét gốc. Nút khóa khi chờ lưu, lỗi hoặc mất mạng; stack chỉ chuyển
 sau ACK hoặc room.state xác nhận UUID. ACK lặp/mất không chuyển stack hai lần.
@@ -144,7 +149,8 @@ Dialog kiểm tra 1–100 ký tự, chặn gửi trùng, chỉ đổi tên edito
 không thay nét/sequence. Lỗi giữ nội dung nhập để thử lại, phản hồi sau khi rời trang
 bị bỏ qua. Chrome với dịch vụ giả đã kiểm tra quyền, lỗi và bố cục 390px;
 người dùng đã xác nhận tên editor/card và nét giữ đúng sau mở lại/F5 bằng tài khoản thật.
-Kiểm tra quyền thành viên bằng tài khoản thật còn chờ trong `../Plans.md`.
+Hai tài khoản thật đã xác nhận thành viên không có nút quản lý/undo, vẫn vẽ đồng
+bộ và F5 giữ nét; kết quả chi tiết trong `../Plans.md`.
 
 Store `draft.ts` giữ bản nháp và undo/redo độc lập với `board.ts`. Đi qua Trang chủ,
 Studio hoặc dự án đã lưu không xóa bản nháp; Tạo trang mới chỉ xóa bản nháp đó.
@@ -159,7 +165,10 @@ server xác nhận vẫn nằm trong database. Link HMAC được lấy lại t�
 
 Chủ có nút **Chia sẻ** ở cả Cá nhân và Chung. Hộp đọc trạng thái bằng GET, đổi chế
 độ bằng PATCH; chỉ đổi editor/card sau xác nhận và chuyển card sang đúng nhóm.
-Chờ hết nét chưa xác nhận/lỗi lưu trước khi đổi. Chuyển về Cá nhân có xác nhận
+Hộp nêu rõ lý do khóa: còn nét chờ xác nhận, lỗi lưu, chưa đồng bộ hoặc cần đăng
+nhập lại. Khôi phục kết nối chỉ mở lại lựa chọn; người dùng phải chủ động chọn
+hoặc xác nhận. Nút xác nhận kiểm tra lại khóa, kể cả khi hộp đã mở trước lúc mất
+mạng. Chuyển về Cá nhân có xác nhận
 thu quyền; đang ghi thì nút đóng/Esc bị khóa, lỗi giữ chế độ đã xác nhận để thử lại.
 Link HMAC hiện ngay và copy được. Dự án dùng link cũ có nút **Cập nhật link**,
 kể cả khi URL cũ còn trong cache. Hộp xác nhận nói rõ link trước sẽ hết hiệu lực,
@@ -194,6 +203,18 @@ F5 tải lại danh sách. Tải nền lỗi vẫn giữ card; đăng xuất/đ�
 trang nào hoặc API báo lỗi xác thực sẽ xóa cache. Dự án vừa tạo được thêm ngay,
 phản hồi GET cũ không ghi đè thẻ mới. Thời gian cập nhật hiển thị theo trình duyệt.
 
+Menu **⋮** trên thẻ của chủ cho phép **Đổi tên**, **Đổi chế độ chia sẻ** và
+**Xóa dự án**. Chọn **Cùng chỉnh sửa** để mời qua link hoặc **Cá nhân** để thu
+quyền thành viên. Thẻ chuyển nhóm khi server xác nhận. Hộp thoại xóa nêu rõ
+dữ liệu sẽ bị xóa vĩnh viễn và yêu cầu xác nhận trước khi gửi.
+
+Mở card cũ mà API xác nhận `ROOM_NOT_FOUND` sẽ bỏ card khỏi cache Studio và
+vô hiệu hóa phản hồi danh sách đang chờ. HTML/404 từ dịch vụ trung gian không đủ
+để loại card. Thành viên đang ở danh sách dùng **Tải lại** để cập nhật quyền.
+Test dùng RoomList/Pinia thật với API giả kiểm tra chuyển nhóm, thu quyền sau
+cập nhật và cách ly tài khoản. Hai tài khoản thật đã xác nhận chuyển nhóm đúng,
+card cũ bị chặn và biến mất sau Tải lại/F5; chi tiết trong `../Plans.md`.
+
 Chrome đã kiểm tra phím tắt/focus, chuyển trang, giữ bản nháp và link cũ. Test
 Vue kiểm tra lifecycle, khóa công cụ, quyền/dialog, bỏ metadata trễ. Bộ lọc/ngày
 cập nhật, cache theo tài khoản và phục hồi editor đã kiểm tra Chrome bằng dữ liệu giả;
@@ -210,3 +231,17 @@ theo `../Plans.md`.
 ```sh
 npm run lint
 ```
+
+### Chat dự án
+
+Trong editor của dự án **Cùng chỉnh sửa**, khung **Trò chuyện** nằm dưới khu vực
+vẽ/công cụ. Enter gửi, Shift+Enter xuống dòng; mỗi tin tối đa 1.000 ký tự. UI hiện
+50 tin gần nhất, nhận tin mới qua socket đang dùng cho dự án và tải lại lịch sử sau
+F5/reconnect. Nhãn người gửi hiện Bạn/Thành viên, chưa lấy tên/avatar từ Clerk.
+
+Mất mạng khóa gửi; tin chưa xác nhận giữ UUID khi bấm Gửi lại. Đăng xuất/đổi
+tài khoản, rời editor hoặc chuyển Cá nhân dọn phần chat đang mở. Lịch sử đã lưu
+được backend mã hóa trong Supabase; frontend không giữ khóa mã hóa. Ngày
+17/11/2026, người dùng xác nhận hai tài khoản gửi/nhận trực tiếp và F5 giữ lịch sử;
+Supabase đã đối chiếu bản mã. Người dùng cũng xác nhận về Cá nhân ẩn chat,
+thành viên về Studio và URL editor cũ bị chặn; xem [Plans.md](../Plans.md).

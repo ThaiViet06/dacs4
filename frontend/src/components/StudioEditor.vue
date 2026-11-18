@@ -5,12 +5,13 @@ import { RouterLink } from 'vue-router'
 import DrawingCanvas from './DrawingCanvas.vue'
 import RoomInvitation from './RoomInvitation.vue'
 import RenameProjectForm from './RenameProjectForm.vue'
-import { getVisibleOperations, type Operation, type Room, type Tool } from '../drawing/model'
+import ProjectChat from './ProjectChat.vue'
+import type { Operation, Room, Tool } from '../drawing/model'
 import { useBoardStore } from '../stores/board'
 import { useDraftStore } from '../stores/draft'
 import { useDrawingStore } from '../stores/drawing'
 
-const props = defineProps<{ room?: Room; isOwner?: boolean }>()
+const props = defineProps<{ room?: Room; isOwner?: boolean; currentUserId?: string }>()
 const emit = defineEmits<{ renamed: [room: Room]; 'sharing-changed': [room: Room] }>()
 // Cùng một editor: có metadata dự án thì dùng dữ liệu server, còn bản nháp dùng lịch sử local.
 const isProject = computed(() => Boolean(props.room))
@@ -32,7 +33,9 @@ const board = useBoardStore()
 const draft = useDraftStore()
 const drawing = useDrawingStore()
 // Bản nháp và dự án có dữ liệu riêng nhưng cùng dùng renderer và các công cụ.
-const operations = computed(() => (isProject.value ? board.operations : draft.document.operations))
+const operations = computed(() =>
+  isProject.value ? board.renderOperations : draft.document.operations,
+)
 // Chỉ vẽ khi đã đồng bộ và không còn lỗi ghi đang phục hồi; nét chờ vẫn được giữ trên Canvas.
 const canDraw = computed(
   () => !isProject.value || (board.status === 'connected' && !board.hasSaveError),
@@ -61,7 +64,9 @@ const saveStatus = computed(() => {
 })
 // Chỉ đếm nét đang hiện đã được xác nhận; sự kiện ẩn/hiện và nét bị ẩn không làm tăng nhãn số nét.
 const operationCount = computed(() =>
-  isProject.value ? getVisibleOperations(board.document).length : draft.document.operations.length,
+  isProject.value
+    ? (board.renderedSnapshot?.visibleCount ?? 0) + board.confirmedOperations.length
+    : draft.document.operations.length,
 )
 // Thanh trượt đọc và ghi cỡ của công cụ đang chọn; bút và tẩy giữ giá trị riêng.
 const activeSize = computed({
@@ -100,10 +105,18 @@ const resetDialog = ref<HTMLDialogElement | null>(null)
 const shareDialog = ref<HTMLDialogElement | null>(null)
 const sharingOpen = ref(false)
 const sharingBusy = ref(false)
-// Chỉ thay quyền sau khi các nét của mình đã được server xác nhận; lỗi lưu cũng cần được xử lý trước.
-const sharingBlocked = computed(
-  () => !canDraw.value || board.pendingCount > 0 || board.rejected.length > 0,
-)
+// Giải thích đúng lý do đang khóa đổi chế độ; chỉ mở lại khi phiên, kết nối và các nét chờ đã sẵn sàng.
+const sharingBlockedReason = computed(() => {
+  if (board.authRequired) return 'Đăng nhập lại và kết nối lại dự án trước khi đổi chế độ.'
+  if (board.hasSaveError || board.rejected.length)
+    return 'Có thao tác chưa lưu. Hãy chờ phục hồi hoặc xử lý lỗi lưu trước khi đổi chế độ.'
+  if (!canDraw.value) return 'Chờ kết nối và đồng bộ dự án trước khi đổi chế độ.'
+  if (board.pendingCount)
+    return `Còn ${board.pendingCount} thao tác chờ xác nhận. Chờ lưu xong rồi đổi chế độ.`
+  return ''
+})
+// Dùng cùng điều kiện cho nút và lời giải thích để không báo sẵn sàng khi thao tác vẫn bị khóa.
+const sharingBlocked = computed(() => Boolean(sharingBlockedReason.value))
 let feedbackTimer: ReturnType<typeof setTimeout> | undefined
 let feedbackGeneration = 0
 
@@ -249,8 +262,19 @@ function reconnectProject() {
 
 // Chuyển nét hoàn thành đến đúng nơi lưu, tránh bản nháp lọt vào dữ liệu dự án.
 function commitStroke(operation: Operation) {
-  if (isProject.value) board.commit(operation)
-  else draft.commit(operation)
+  if (isProject.value) {
+    if (!board.commit(operation)) board.cancelPreview(operation.id)
+  } else draft.commit(operation)
+}
+
+// Chỉ gửi nét đang kéo khi editor thuộc một dự án chia sẻ.
+function sendPreview(operation: Operation) {
+  if (isProject.value) board.preview(operation)
+}
+
+// Báo bên kia xóa nét tạm khi trình duyệt hủy thao tác.
+function cancelPreview(id: string) {
+  if (isProject.value) board.cancelPreview(id)
 }
 </script>
 
@@ -300,6 +324,7 @@ function commitStroke(operation: Operation) {
           :key="room.id"
           :room="room"
           :disabled="sharingBlocked"
+          :blocked-reason="sharingBlockedReason"
           @busy="sharingBusy = $event"
           @changed="emit('sharing-changed', $event)"
         />
@@ -399,11 +424,17 @@ function commitStroke(operation: Operation) {
         <div class="canvas-wrap">
           <DrawingCanvas
             :operations="operations"
+            :snapshot="isProject ? board.renderedSnapshot?.bitmap : null"
+            :pending="isProject ? board.pendingStrokes : undefined"
+            :remote="isProject ? board.remotePreviews : undefined"
+            :live-preview="isProject && Boolean(room?.sharingEnabled)"
             :tool="drawing.tool"
             :color="drawing.color"
             :brush-size="activeSize"
             :enabled="canDraw"
             @commit="commitStroke"
+            @preview="sendPreview"
+            @cancel-preview="cancelPreview"
           />
         </div>
         <div class="canvas-panel-footer">
@@ -582,6 +613,14 @@ function commitStroke(operation: Operation) {
           }}
         </p>
       </aside>
+      <ProjectChat
+        v-if="room?.sharingEnabled"
+        :key="room.id"
+        :room-id="room.id"
+        :current-user-id="currentUserId ?? ''"
+        :connected="board.status === 'connected' && !board.authRequired"
+        :incoming-message="board.lastChatMessage"
+      />
     </div>
   </div>
 </template>

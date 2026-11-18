@@ -5,12 +5,21 @@ import { createRequire } from 'node:module'
 import { createPinia, setActivePinia } from 'pinia'
 import ts from 'typescript'
 import * as model from '../src/drawing/model.ts'
+import * as codec from '../src/drawing/codec.ts'
+import * as chatModel from '../src/chat/model.ts'
 
 const require = createRequire(import.meta.url)
 
 // Dùng store thật, chỉ thay API dự án để bản nháp không phụ thuộc Clerk hoặc mạng.
 function setup(context) {
   setActivePinia(createPinia())
+  const dependencies = {
+    '../drawing/model': model,
+    '../drawing/codec': codec,
+    '../chat/model': chatModel,
+    '../services/auth': { getToken: async () => 'unused' },
+    '../services/api': { WS_URL: 'ws://test.invalid' },
+  }
   // Biên dịch các store TypeScript bằng compiler đã có trong frontend.
   function loadStore(filename) {
     const source = readFileSync(new URL('../src/stores/' + filename, import.meta.url), 'utf8')
@@ -19,14 +28,7 @@ function setup(context) {
     }).outputText
     const module = { exports: {} }
     new Function('require', 'module', 'exports', code)(
-      (name) =>
-        name === '../drawing/model'
-          ? model
-          : name === '../services/auth'
-            ? { getToken: async () => 'unused' }
-            : name === '../services/api'
-              ? { WS_URL: 'ws://test.invalid' }
-              : require(name),
+      (name) => dependencies[name] ?? require(name),
       module,
       module.exports,
     )

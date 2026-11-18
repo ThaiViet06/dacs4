@@ -4,8 +4,8 @@ import type { Room } from '../drawing/model'
 import { ApiError } from '../services/api'
 import { renameRoom } from '../services/rooms'
 
-const props = defineProps<{ room: Room; disabled?: boolean }>()
-const emit = defineEmits<{ renamed: [room: Room] }>()
+const props = defineProps<{ room: Room; disabled?: boolean; hideTrigger?: boolean }>()
+const emit = defineEmits<{ renamed: [room: Room]; closed: [] }>()
 const renameDialog = ref<HTMLDialogElement | null>(null)
 const title = ref('')
 const titleError = ref('')
@@ -22,9 +22,14 @@ function openDialog() {
   renameDialog.value?.showModal()
 }
 
+// Menu trên thẻ dự án có thể mở cùng biểu mẫu mà editor đang dùng.
+defineExpose({ openDialog })
+
 // Chờ yêu cầu đang gửi hoàn tất trước khi cho đóng bằng Hủy hoặc Esc.
 function closeDialog() {
-  if (!saving.value && renameDialog.value?.open) renameDialog.value.close()
+  if (saving.value || !renameDialog.value?.open) return
+  renameDialog.value.close()
+  emit('closed')
 }
 
 // Rời dự án hoặc mất quyền chủ thì đóng hộp và bỏ mọi phản hồi còn chờ.
@@ -34,7 +39,7 @@ function discardRequest() {
   title.value = ''
   titleError.value = ''
   requestError.value = ''
-  closeDialog()
+  if (renameDialog.value?.open) renameDialog.value.close()
 }
 
 watch(() => props.room.id, discardRequest)
@@ -61,6 +66,7 @@ async function submitRename() {
     if (version !== requestVersion) return
     emit('renamed', result.room)
     renameDialog.value?.close()
+    emit('closed')
   } catch (cause) {
     if (version !== requestVersion) return
     if (!(cause instanceof ApiError) || cause.status === 401) {
@@ -81,6 +87,7 @@ async function submitRename() {
 
 <template>
   <button
+    v-if="!hideTrigger"
     class="button button-outline"
     type="button"
     aria-haspopup="dialog"

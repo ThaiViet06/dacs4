@@ -1,7 +1,11 @@
 const { randomUUID, randomBytes, createHash } = require("node:crypto");
+const { isDeepStrictEqual } = require("node:util");
 const { AppError } = require("./errors");
 const { emptyDocument, checkSize, titleSchema, eventSchema, normalizeDocument } = require("./protocol");
 const { sharingChange } = require("./sharing");
+const { packStroke, unpackStroke } = require("./stroke-codec");
+const { PerformanceSync } = require("./drawing-sync");
+const ROOM_METADATA = "r.id,r.title,r.owner_id,r.sequence,r.sharing_enabled,r.updated_at,r.checkpoint IS NOT NULL AS checkpoint";
 // Băm token lời mời để database không lưu token có thể dùng trực tiếp.
 const hash = (token) => createHash("sha256").update(token).digest("hex");
 // Tạo token lời mời ngẫu nhiên để chia sẻ liên kết vào phòng.
@@ -13,9 +17,23 @@ function metadata(row) {
 }
 class PostgresRepository {
   // Giữ pool và bộ sinh token từ cấu hình; thiếu khóa vẫn cho phép đọc/vẽ và tắt chia sẻ.
-  constructor(pool, { shareToken } = {}) { this.pool = pool; this.shareToken = shareToken; }
+  constructor(pool, { shareToken } = {}) {
+    this.pool = pool;
+    this.shareToken = shareToken;
+    this.performanceReady = false;
+  }
   // Kiểm tra cả cột chế độ dự án để không phục vụ API với schema chưa chạy migration mới.
   async ready() { await this.pool.query("SELECT id,sharing_enabled,sharing_version FROM drawing.rooms LIMIT 0"); }
+  // Bật đường đọc hỗn hợp trước. Backend vẫn chạy được khi môi trường chưa áp dụng migration.
+  async enablePerformance({ packed = true } = {}) {
+    const { rows: [row] } = await this.pool.query(
+      "SELECT to_regprocedure('drawing.write_operation_batch(uuid,jsonb)') IS NOT NULL AS ready",
+    );
+    this.performanceReady = row.ready;
+    this.packedWrites = packed;
+    if (row.ready) this.sync = new PerformanceSync(this, metadata);
+    return row.ready;
+  }
   // Chạy nhiều câu truy vấn trong một giao dịch; lỗi thì hoàn tác toàn bộ.
   async transaction(action) {
     const client = await this.pool.connect();
@@ -42,9 +60,16 @@ class PostgresRepository {
     checkSize(document);
     const id = randomUUID();
     const inviteToken = token();
+    const json = JSON.stringify(document);
     // Chỉ công bố phòng sau khi cả phòng và tư cách thành viên đã lưu thành công.
     const room = await this.transaction(async (client) => {
-      const { rows: [row] } = await client.query("INSERT INTO drawing.rooms(id,title,owner_id,invite_hash,initial_document) VALUES($1,$2,$3,$4,$5) RETURNING *", [id, title, userId, hash(inviteToken), JSON.stringify(document)]);
+      const values = [id, title, userId, hash(inviteToken), json];
+      const { rows: [row] } = this.performanceReady
+        ? await client.query(
+          "INSERT INTO drawing.rooms(id,title,owner_id,invite_hash,initial_document,document_bytes,document_bytes_sequence) VALUES($1,$2,$3,$4,$5,$6,0) RETURNING *",
+          [...values, Buffer.byteLength(json)],
+        )
+        : await client.query("INSERT INTO drawing.rooms(id,title,owner_id,invite_hash,initial_document) VALUES($1,$2,$3,$4,$5) RETURNING *", values);
       await client.query("INSERT INTO drawing.room_members(room_id,user_id) VALUES($1,$2)", [id, userId]);
       return metadata(row);
     });
@@ -52,7 +77,7 @@ class PostgresRepository {
   }
   // Chỉ liệt kê dự án cá nhân của chủ hoặc dự án chung đã tham gia, tối đa 100 mục mới cập nhật trước.
   async listRooms(userId) {
-    const { rows } = await this.pool.query("SELECT r.* FROM drawing.rooms r JOIN drawing.room_members m ON m.room_id=r.id WHERE m.user_id=$1 AND (r.owner_id=$1 OR r.sharing_enabled) ORDER BY r.updated_at DESC LIMIT 100", [userId]);
+    const { rows } = await this.pool.query(`SELECT ${ROOM_METADATA} FROM drawing.rooms r JOIN drawing.room_members m ON m.room_id=r.id WHERE m.user_id=$1 AND (r.owner_id=$1 OR r.sharing_enabled) ORDER BY r.updated_at DESC LIMIT 100`, [userId]);
     return rows.map(metadata);
   }
   // Kiểm tra token và chế độ chia sẻ trước khi thêm thành viên; tham gia lại không tạo bản ghi trùng.
@@ -64,8 +89,16 @@ class PostgresRepository {
       return metadata(row);
     });
   }
-  // Chỉ trả thông tin phòng cho thành viên đã có quyền truy cập.
-  async getRoom(userId, roomId) { return metadata(await this.member(this.pool, userId, roomId, false)); }
+  // Đọc quyền và metadata, tránh tải initial_document khi editor hỏi tên hoặc chế độ.
+  async getRoom(userId, roomId) {
+    if (!this.performanceReady) return metadata(await this.member(this.pool, userId, roomId, false));
+    const { rows: [room] } = await this.pool.query(
+      `SELECT ${ROOM_METADATA} FROM drawing.rooms r JOIN drawing.room_members m ON m.room_id=r.id AND m.user_id=$2
+       WHERE r.id=$1 AND (r.sharing_enabled OR r.owner_id=$2)`, [roomId, userId],
+    );
+    if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied.");
+    return metadata(room);
+  }
   // Chủ đọc chế độ và lấy lại token HMAC hiện tại; chỉ đọc, không xoay link cũ hoặc trả hash/version nội bộ.
   async getSharing(userId, roomId) {
     const room = await this.member(this.pool, userId, roomId, false);
@@ -121,6 +154,14 @@ class PostgresRepository {
       return metadata(updated);
     });
   }
+  // Khóa dự án và kiểm tra quyền chủ trước khi xóa. Khóa ngoại dọn nét vẽ, thành viên và chat.
+  async deleteRoom(userId, roomId) {
+    await this.transaction(async (client) => {
+      const room = await this.member(client, userId, roomId);
+      this.owner(room, userId);
+      await client.query("DELETE FROM drawing.rooms WHERE id=$1", [room.id]);
+    });
+  }
   // Lấy lại nguyên link HMAC; chỉ dự án version 0 còn dùng hành vi phát link ngẫu nhiên của endpoint cũ.
   async invitation(userId, roomId) {
     return this.transaction(async (client) => {
@@ -144,8 +185,9 @@ class PostgresRepository {
   // Ghép lịch sử đến sequence cần đọc; giữ v1 cho nét cũ, trả v2 khi có sự kiện ẩn/hiện.
   async document(client, room, sequence = room.sequence) {
     if (sequence > room.sequence) throw new AppError(409, "SEQUENCE_AHEAD", "Wait for drawing synchronization before saving.");
-    const { rows } = await client.query("SELECT payload FROM drawing.room_operations WHERE room_id=$1 AND sequence<=$2 ORDER BY sequence", [room.id, sequence]);
-    const document = { ...room.initial_document, operations: [...room.initial_document.operations, ...rows.map((row) => row.payload)] };
+    const columns = this.performanceReady ? "operation_id,payload,packed" : "payload";
+    const { rows } = await client.query(`SELECT ${columns} FROM drawing.room_operations WHERE room_id=$1 AND sequence<=$2 ORDER BY sequence`, [room.id, sequence]);
+    const document = { ...room.initial_document, operations: [...room.initial_document.operations, ...rows.map(decodeRow)] };
     if (document.version === 1 && document.operations.some((event) => event.type === "visibility")) document.version = 2;
     return document.version === 1 ? document : normalizeDocument(document);
   }
@@ -158,6 +200,11 @@ class PostgresRepository {
   }
   // Ghi nét hoặc ẩn/hiện cùng sequence trong transaction; chỉ trả kết quả sau COMMIT, retry giữ UUID cũ.
   async commit(userId, roomId, operation) {
+    if (this.performanceReady) {
+      const [result] = await this.commitBatch(roomId, [{ userId, operation }]);
+      if (result.error) throw result.error;
+      return result;
+    }
     eventSchema(operation);
     return this.transaction(async (client) => {
       const room = await this.member(client, userId, roomId);
@@ -184,6 +231,46 @@ class PostgresRepository {
       await client.query("UPDATE drawing.rooms SET sequence=$2,updated_at=now() WHERE id=$1", [roomId, sequence]);
       return { sequence, operation, duplicate: false };
     });
+  }
+  // Khởi tạo bộ đếm từ JSON mà ứng dụng đang dùng và chỉ ghi khi mốc vẫn còn đúng.
+  async refreshDocumentBytes(userId, roomId) {
+    const room = await this.member(this.pool, userId, roomId, false);
+    const document = await this.document(this.pool, room);
+    await this.pool.query(
+      "UPDATE drawing.rooms SET document_bytes=$2,document_bytes_sequence=$3 WHERE id=$1 AND sequence=$3",
+      [roomId, Buffer.byteLength(JSON.stringify(document)), room.sequence],
+    );
+  }
+  // Ghi cả lô bằng một câu SQL và trả kết quả riêng cho từng UUID sau commit.
+  async commitBatch(roomId, entries) {
+    const jobs = entries.map(({ operation, userId }) => {
+      eventSchema(operation);
+      const packed = this.packedWrites ? packStroke(operation)?.toString("base64") : undefined;
+      return { author: userId, id: operation.id, packed, payload: packed ? undefined : operation,
+        bytes: Buffer.byteLength(JSON.stringify(operation)),
+        target: operation.type === "visibility" ? operation.targetId : undefined };
+    });
+    let result;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { rows } = await this.pool.query(
+        "SELECT drawing.write_operation_batch($1,$2::jsonb) AS result", [roomId, JSON.stringify(jobs)],
+      );
+      result = rows[0].result;
+      if (!result.stale) break;
+      await this.refreshDocumentBytes(result.author, roomId);
+    }
+    if (!result?.results) throw new AppError(503, "SERVICE_UNAVAILABLE", "Drawing state changed. Please retry.");
+    const outcomes = result.results.map((item, index) => {
+      const operation = entries[index].operation;
+      if (item.error) return { error: commitError(item.error) };
+      if (item.duplicate) {
+        const stored = item.packed ? unpackStroke(operation.id, Buffer.from(item.packed, "base64")) : item.payload;
+        if (!isDeepStrictEqual(stored, operation)) return { error: commitError("OPERATION_CONFLICT") };
+      }
+      return { sequence: item.sequence, duplicate: item.duplicate, operation, targetSequence: item.targetSequence };
+    });
+    this.sync?.remember(roomId, outcomes);
+    return outcomes;
   }
   // Lưu checkpoint của chủ phòng hoặc bản sao riêng từ thao tác đã có trong database.
   async save(userId, roomId, title, sequence, checkpoint) {
@@ -222,4 +309,24 @@ class PostgresRepository {
     return this.createRoom(userId, `${checkpoint.title.slice(0, 90)} (copy)`, checkpoint.document);
   }
 }
+
+// Đọc được cả dòng JSONB cũ lẫn dòng bytea mới.
+function decodeRow(row) {
+  return row.packed ? unpackStroke(row.operation_id, row.packed) : row.payload;
+}
+
+// Giữ mã lỗi công khai quen thuộc cho xử lý nét chờ phía trình duyệt.
+function commitError(code) {
+  const errors = {
+    ROOM_NOT_FOUND: [404, "Room not found or access denied."],
+    OWNER_REQUIRED: [403, "Only the room owner can do that."],
+    OPERATION_CONFLICT: [409, "An operation with that ID already exists."],
+    PERSONAL_MODE_REQUIRED: [409, "Switch to personal mode before undoing or redoing a stroke."],
+    DOCUMENT_FULL: [413, "This board reached its 5 MiB limit. Start a new room."],
+    INVALID_INPUT: [400, "Invalid drawing or visibility target."],
+  };
+  const [status, message] = errors[code] || [503, "Could not save this operation. Please retry."];
+  return new AppError(status, code, message);
+}
+
 module.exports = { PostgresRepository };

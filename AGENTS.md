@@ -32,6 +32,10 @@ Use two-space indentation and single quotes in TypeScript/Vue code, matching the
 
 Backend tests live in `backend/tests/*.test.js`; frontend drawing tests run with `node --test frontend/tests/drawing.test.mjs` from the root. No coverage threshold is configured. Keep tests descriptive and document new commands in the relevant `package.json`.
 
+`npm run test:database` in `backend/` runs an opt-in PostgreSQL collaboration check with test authentication and cleans up its temporary project.
+
+Agents should run applicable checks themselves using isolated fixtures or temporary test servers. Distinguish simulated authentication/storage from live Clerk/Supabase checks; request manual assistance only when the required access is unavailable.
+
 ## Commit & Pull Request Guidelines
 
 No Git history is available in this checkout, so follow a clear imperative convention such as `Add WebSocket reconnect handling` or `Fix frontend route guard`. Keep commits focused. Pull requests should explain the change, list validation commands run, link related issues when applicable, and include screenshots or recordings for visible UI changes. Mention API, WebSocket, configuration, or breaking behavior explicitly.

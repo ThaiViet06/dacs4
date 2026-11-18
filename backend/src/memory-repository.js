@@ -103,6 +103,13 @@ class MemoryRepository {
     return this.#metadata(room);
   }
 
+  // Repository thử nghiệm áp dụng cùng quyền xóa như PostgreSQL.
+  async deleteRoom(userId, roomId) {
+    const room = await this.getRoom(userId, roomId);
+    if (room.ownerId !== userId) throw new AppError(403, "OWNER_REQUIRED", "Only the room owner can do that.");
+    this.#rooms.delete(roomId);
+  }
+
   // Trả object mới chỉ có metadata công khai; không lộ token/hash, tài liệu hoặc tập thành viên nội bộ.
   #metadata(room) {
     return {

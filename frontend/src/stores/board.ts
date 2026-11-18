@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   emptyDocument,
@@ -13,7 +13,9 @@ import {
   type Room,
 } from '../drawing/model'
 import { getToken, SignInRequiredError } from '../services/auth'
-import { WS_URL } from '../services/api'
+import { api, API_URL, WS_URL } from '../services/api'
+import { decodeStroke, encodeStroke } from '../drawing/codec'
+import { isChatMessage, type ChatMessage } from '../chat/model'
 
 interface RoomSession {
   room: Room | null
@@ -28,6 +30,43 @@ interface HistoryAction {
   type: 'draw' | 'undo' | 'redo'
   targetId: string
 }
+interface OperationFrame {
+  sequence: number
+  operation?: DrawingEvent
+  id?: string
+  packed?: string
+  targetSequence?: number
+}
+interface SyncFrame {
+  room: Room
+  sequence: number
+  after: number
+  epoch: number
+  events: OperationFrame[]
+  snapshot: { sequence: number; visibleCount: number } | null
+}
+
+// Dùng cùng một bộ giải mã cho nét trực tiếp và phần đuôi khi kết nối lại.
+function frameOperation(frame: OperationFrame): DrawingEvent {
+  const operation =
+    frame.packed && frame.id ? decodeStroke(frame.id, frame.packed) : frame.operation
+  if (typeof operation?.id !== 'string') throw new Error('Missing operation')
+  return operation
+}
+
+// Tải ảnh bằng token hiện tại, không lưu ảnh riêng tư vào HTTP cache.
+async function loadSnapshot(roomId: string, sequence: number) {
+  const token = await getToken()
+  const response = await fetch(`${API_URL}/api/rooms/${roomId}/render-snapshot/${sequence}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(12000),
+  })
+  if (!response.ok) throw new Error('Snapshot unavailable')
+  const bitmap = await createImageBitmap(await response.blob())
+  if (bitmap.width === WIDTH && bitmap.height === HEIGHT) return bitmap
+  bitmap.close()
+  throw new Error('Invalid snapshot dimensions')
+}
 
 // Giữ phiên dự án theo tài khoản; bản nháp Vẽ thử nằm ở store draft riêng.
 export const useBoardStore = defineStore('board', () => {
@@ -39,6 +78,17 @@ export const useBoardStore = defineStore('board', () => {
   const authRequired = ref(false)
   const revokedRoomId = ref('')
   const sequence = ref(0)
+  const renderedSnapshot = shallowRef<{
+    bitmap: ImageBitmap
+    sequence: number
+    visibleCount: number
+  } | null>(null)
+  const confirmedOperations = ref<Operation[]>([])
+  const knownIds = new Set<string>()
+  let materialized = false
+  let renderEpoch: number | undefined
+  let forceVector = false
+  let enhanced = false
   const members = ref<{ clientId: string; userId: string }[]>([])
   const pending = ref<Record<string, DrawingEvent>>({})
   const rejected = ref<DrawingEvent[]>([])
@@ -46,6 +96,7 @@ export const useBoardStore = defineStore('board', () => {
     {},
   )
   const invitationUrl = ref('')
+  const lastChatMessage = ref<ChatMessage | null>(null)
   const sessions = new Map<string, RoomSession>()
   const undoStack = ref<string[]>([])
   const redoStack = ref<string[]>([])
@@ -60,6 +111,19 @@ export const useBoardStore = defineStore('board', () => {
   )
   // Đếm thao tác đã gửi nhưng chưa được máy chủ xác nhận, gồm cả nét và sự kiện ẩn/hiện.
   const pendingCount = computed(() => Object.keys(pending.value).length)
+  const pendingStrokes = computed(() =>
+    Object.values(pending.value).filter((event): event is Operation => event.type !== 'visibility'),
+  )
+  // Hoàn tác hiện ngay với nét vector. Nét đang chờ lưu được vẽ ở lớp preview riêng.
+  const renderOperations = computed(() => {
+    const visibility = Object.values(pending.value).find((event) => event.type === 'visibility')
+    return visibility
+      ? getVisibleOperations({
+          ...document.value,
+          operations: [...document.value.operations, visibility],
+        })
+      : confirmedOperations.value
+  })
   // Chỉ chủ Cá nhân có lịch sử riêng; mọi thao tác phải lưu xong trước khi hoàn tác/làm lại.
   const personalOwner = computed(
     () => room.value?.ownerId === accountId && room.value?.sharingEnabled === false,
@@ -154,9 +218,29 @@ export const useBoardStore = defineStore('board', () => {
     socket.send(JSON.stringify({ v: PROTOCOL_VERSION, type, ...data }))
     return true
   }
+  // Chọn định dạng gọn sau khi máy chủ báo hỗ trợ, giữ JSON cho các sự kiện ẩn/hiện.
+  function sendCommit(operation: DrawingEvent) {
+    const packed = enhanced && operation.type !== 'visibility' && encodeStroke(operation)
+    if (packed) send('operation.packed', { id: operation.id, packed })
+    else send('operation.commit', { operation })
+  }
+
+  // Thay ảnh nền và giải phóng bộ nhớ bitmap khi đổi tài liệu.
+  function setSnapshot(snapshot: typeof renderedSnapshot.value) {
+    renderedSnapshot.value?.bitmap.close()
+    renderedSnapshot.value = snapshot
+  }
+
+  // Dựng lại chỉ mục khi tải tài liệu hoặc đổi trạng thái ẩn/hiện của một nét.
+  function indexDocument() {
+    knownIds.clear()
+    for (const operation of document.value.operations) knownIds.add(operation.id)
+    confirmedOperations.value = getVisibleOperations(document.value)
+  }
   // Đóng kết nối hiện tại, hủy bộ hẹn giờ và bỏ trạng thái hiện diện tạm thời.
   function disconnect() {
     generation++
+    enhanced = false
     stopNetworkWatching?.()
     stopNetworkWatching = undefined
     clearTimeout(retryTimer)
@@ -173,6 +257,7 @@ export const useBoardStore = defineStore('board', () => {
     socket = undefined
     members.value = []
     previews.value = {}
+    lastChatMessage.value = null
   }
   // Hết phiên thì dừng mọi retry và khóa vẽ, giữ nét chờ cho cùng tài khoản; đăng xuất vẫn xóa cache.
   function requireAuthentication() {
@@ -184,6 +269,10 @@ export const useBoardStore = defineStore('board', () => {
   // Xóa phần đang hiển thị, không xóa các phiên đã giữ để mở lại dự án sau.
   function clearActive() {
     resetHistory()
+    setSnapshot(null)
+    materialized = false
+    renderEpoch = undefined
+    forceVector = false
     target = ''
     room.value = null
     sequence.value = 0
@@ -192,6 +281,7 @@ export const useBoardStore = defineStore('board', () => {
     rejected.value = []
     invitationUrl.value = ''
     document.value = normalizeDocument(emptyDocument())
+    indexDocument()
     status.value = 'idle'
     error.value = ''
     authRequired.value = false
@@ -202,8 +292,8 @@ export const useBoardStore = defineStore('board', () => {
     sessions.delete(target)
     sessions.set(target, {
       room: room.value,
-      document: document.value,
-      sequence: sequence.value,
+      document: renderedSnapshot.value ? normalizeDocument(emptyDocument()) : document.value,
+      sequence: renderedSnapshot.value ? 0 : sequence.value,
       pending: pending.value,
       hasSaveError: hasSaveError.value,
       rejected: rejected.value,
@@ -245,6 +335,7 @@ export const useBoardStore = defineStore('board', () => {
     if (saved) {
       room.value = saved.room
       document.value = saved.document
+      indexDocument()
       sequence.value = saved.sequence
       pending.value = saved.pending
       hasSaveError.value = saved.hasSaveError
@@ -262,9 +353,69 @@ export const useBoardStore = defineStore('board', () => {
       clearActive()
     }
   }
+  // Studio kiểm tra cả nét đang mở lẫn nét chờ được giữ trong phiên cache trước khi đổi chế độ.
+  function hasUnsavedChanges(roomId: string) {
+    if (target === roomId) return pendingCount.value > 0 || rejected.value.length > 0
+    const saved = sessions.get(roomId)
+    return Boolean(saved && (Object.keys(saved.pending).length > 0 || saved.rejected.length > 0))
+  }
+
+  // Mất quyền hoặc bị xóa phải bỏ cache và báo editor để điều hướng về Studio.
+  function closeRoomAccess(roomId: string, message: string) {
+    forgetRoom(roomId)
+    status.value = 'error'
+    error.value = message
+    revokedRoomId.value = roomId
+  }
+
   // Link chỉ được nhớ cho đúng dự án đang mở và đúng tài khoản chủ, không gửi lại yêu cầu tạo link.
   function rememberInvitation(roomId: string, url: string) {
     if (target === roomId && room.value?.ownerId === accountId) invitationUrl.value = url
+  }
+  // Chỉ bỏ nét đang chờ sau khi có xác nhận đúng UUID và mốc thứ tự.
+  function confirmSaved(operation: DrawingEvent) {
+    acknowledgeHistory(operation)
+    delete pending.value[operation.id]
+    delete previews.value[operation.id]
+  }
+
+  // Nét mới nối vào danh sách render. Undo/redo dựng lại từ lịch sử đã có.
+  function appendSaved(operation: DrawingEvent, nextSequence: number) {
+    document.value.operations.push(operation)
+    knownIds.add(operation.id)
+    sequence.value = nextSequence
+    if (operation.type === 'visibility') {
+      if (!pending.value[operation.id]) resetHistory()
+      confirmedOperations.value = getVisibleOperations(document.value)
+    } else {
+      confirmedOperations.value.push(operation)
+    }
+    confirmSaved(operation)
+  }
+
+  // Ảnh đã gộp nét không thể sửa ngược. Yêu cầu vector nếu thay đổi nhắm tới nét trong ảnh.
+  function requiresVector(operation: DrawingEvent, targetSequence?: number) {
+    return Boolean(
+      renderedSnapshot.value &&
+      operation.type === 'visibility' &&
+      (targetSequence !== undefined && targetSequence !== null
+        ? targetSequence <= renderedSnapshot.value.sequence
+        : !knownIds.has(operation.targetId)),
+    )
+  }
+
+  // Ghi nhận mốc đã phục hồi trước khi gửi lại UUID chưa thấy trong tài liệu.
+  function finishJoin() {
+    materialized = true
+    forceVector = false
+    clearTimeout(watchdog)
+    for (const operation of Object.values(pending.value)) {
+      if (knownIds.has(operation.id)) confirmSaved(operation)
+      else sendCommit(operation)
+    }
+    status.value = 'connected'
+    attempt = 0
+    error.value = ''
   }
   // Lấy token mới khi chủ động kết nối lại; chỉ gửi nét chờ sau room.state của đúng phòng/tài khoản.
   async function connect(roomId: string) {
@@ -302,6 +453,7 @@ export const useBoardStore = defineStore('board', () => {
       clearTimeout(watchdog)
       previews.value = {}
       members.value = []
+      lastChatMessage.value = null
       status.value = 'reconnecting'
       error.value = 'Kết nối bị gián đoạn. Đang chờ kết nối lại với máy chủ.'
       const delay =
@@ -322,6 +474,72 @@ export const useBoardStore = defineStore('board', () => {
         if (current !== generation) return
         const connection = new WebSocket(WS_URL)
         socket = connection
+        enhanced = false
+        let joining = false
+        let syncInProgress = false
+        let bufferedBytes = 0
+        const buffered: MessageEvent[] = []
+        // Giữ thứ tự các xác nhận đến trong lúc tải ảnh, giới hạn bộ đệm và thử lại nếu quá tải.
+        async function restoreSync(message: SyncFrame) {
+          syncInProgress = true
+          try {
+            if (
+              message.room?.id !== roomId ||
+              !Number.isSafeInteger(message.after) ||
+              message.after < 0 ||
+              !Number.isSafeInteger(message.sequence) ||
+              !Number.isSafeInteger(message.epoch) ||
+              !Array.isArray(message.events) ||
+              message.sequence !== message.after + message.events.length ||
+              (message.snapshot
+                ? message.snapshot.sequence !== message.after ||
+                  !Number.isSafeInteger(message.snapshot.visibleCount) ||
+                  message.snapshot.visibleCount < 0
+                : !materialized || sequence.value !== message.after)
+            )
+              throw new Error('Invalid sync state')
+            const events = message.events.map((frame, index) => {
+              if (frame.sequence !== message.after + index + 1)
+                throw new Error('Invalid event order')
+              return frameOperation(frame)
+            })
+            if (message.snapshot) {
+              const bitmap = await loadSnapshot(roomId, message.after)
+              if (
+                current !== generation ||
+                socket !== connection ||
+                connection.readyState !== WebSocket.OPEN
+              ) {
+                bitmap.close()
+                return
+              }
+              resetHistory()
+              setSnapshot({ bitmap, ...message.snapshot })
+              document.value = normalizeDocument(emptyDocument())
+              sequence.value = message.after
+              indexDocument()
+            }
+            room.value = message.room
+            for (const [index, operation] of events.entries()) {
+              if (
+                knownIds.has(operation.id) ||
+                requiresVector(operation, message.events[index]?.targetSequence)
+              )
+                throw new Error('Cannot replay event')
+              appendSaved(operation, message.after + index + 1)
+            }
+            renderEpoch = message.epoch
+            finishJoin()
+            syncInProgress = false
+            for (const frame of buffered) connection.onmessage?.(frame)
+            buffered.length = 0
+          } catch {
+            if (current === generation && socket === connection) {
+              forceVector = true
+              connection.close(4000, 'Restore vector document')
+            }
+          }
+        }
         // Đóng kết nối nếu máy chủ không gửi trạng thái phòng trong thời hạn chờ.
         watchdog = setTimeout(() => connection.close(), 75000)
         // Gửi token ngay khi WebSocket đã sẵn sàng.
@@ -335,7 +553,12 @@ export const useBoardStore = defineStore('board', () => {
         }
         // Phân loại phản hồi xác thực, trạng thái phòng, nét vẽ và lỗi từ máy chủ.
         connection.onmessage = (event) => {
-          if (current !== generation || socket !== connection) return
+          if (
+            current !== generation ||
+            socket !== connection ||
+            connection.readyState !== WebSocket.OPEN
+          )
+            return
           try {
             const message = JSON.parse(event.data)
             if (message.v !== PROTOCOL_VERSION) {
@@ -346,7 +569,15 @@ export const useBoardStore = defineStore('board', () => {
                 'Phiên bản kết nối không tương thích. Cập nhật backend rồi bấm Kết nối lại.'
               return
             }
+            if (syncInProgress && ['operation.committed', 'operation.ack'].includes(message.type)) {
+              bufferedBytes += event.data.length
+              if (buffered.length >= 256 || bufferedBytes > 1024 * 1024)
+                connection.close(4000, 'Sync buffer full')
+              else buffered.push(event)
+              return
+            }
             if (message.type === 'auth.ok') {
+              enhanced = message.drawingSync === true
               clearTimeout(tokenTimer)
               // Làm mới token trước khi hết hạn để phiên vẽ chung tiếp tục hoạt động.
               tokenTimer = setTimeout(
@@ -366,7 +597,23 @@ export const useBoardStore = defineStore('board', () => {
                 },
                 Math.max(1000, message.expiresAt - Date.now() - 15000),
               )
-              if (status.value !== 'connected') send('room.join', { roomId })
+              if (!joining) {
+                joining = true
+                const sync = forceVector
+                  ? { vectorOnly: true }
+                  : materialized
+                    ? {
+                        lastSeq: sequence.value,
+                        epoch: renderEpoch,
+                        snapshot: Boolean(renderedSnapshot.value),
+                      }
+                    : {}
+                send('room.join', enhanced ? { roomId, sync } : { roomId })
+              }
+            } else if (message.type === 'room.sync') {
+              if (!enhanced || syncInProgress || status.value === 'connected')
+                throw new Error('Unexpected sync frame')
+              void restoreSync(message)
             } else if (message.type === 'room.state') {
               // Không nhận nhầm tài liệu phòng khác hoặc đánh dấu kết nối với trạng thái thiếu dữ liệu.
               if (
@@ -379,14 +626,15 @@ export const useBoardStore = defineStore('board', () => {
                 !Array.isArray(message.document.operations)
               )
                 throw new Error('Trạng thái phòng không hợp lệ. Đang thử tải lại…')
-              const previous = new Set(document.value.operations.map((operation) => operation.id))
+              const previous = new Set(knownIds)
+              setSnapshot(null)
+              renderEpoch = undefined
               document.value = normalizeDocument(message.document)
+              indexDocument()
               sequence.value = message.sequence
               room.value = message.room
               previews.value = {}
-              clearTimeout(watchdog)
               // Nét đã có trong trạng thái server được xác nhận tại chỗ; nét còn thiếu gửi lại nguyên UUID.
-              const known = new Set(document.value.operations.map((operation) => operation.id))
               for (const operation of document.value.operations) {
                 // Tab khác đổi ẩn/hiện thì bỏ lịch sử phiên cũ; tài liệu chuẩn của server luôn được giữ.
                 if (
@@ -397,42 +645,47 @@ export const useBoardStore = defineStore('board', () => {
                   resetHistory()
                 acknowledgeHistory(operation)
               }
-              for (const [id, operation] of Object.entries(pending.value)) {
-                if (known.has(id)) delete pending.value[id]
-                else send('operation.commit', { operation })
-              }
-              status.value = 'connected'
-              attempt = 0
-              error.value = ''
-            } else if (message.type === 'operation.committed') {
-              if (
-                !Number.isSafeInteger(message.sequence) ||
-                message.sequence < 1 ||
-                typeof message.operation?.id !== 'string'
-              )
+              finishJoin()
+            } else if (message.type === 'operation.committed' || message.type === 'operation.ack') {
+              const ack = message.type === 'operation.ack'
+              const next = ack ? message.seq : message.sequence
+              const operation = ack ? pending.value[message.id] : frameOperation(message)
+              if (!Number.isSafeInteger(next) || next < 1)
                 throw new Error('Invalid acknowledgement')
-              const known = document.value.operations.some(
-                (operation) => operation.id === message.operation.id,
-              )
-              if (message.sequence > sequence.value) {
-                if (message.sequence !== sequence.value + 1 || known) {
+              if (!operation && ack && next <= sequence.value) return
+              if (!operation) throw new Error('Unknown acknowledgement')
+              const known = knownIds.has(operation.id)
+              if (next > sequence.value) {
+                if (next !== sequence.value + 1 || known) {
                   socket?.close(4000, 'Resynchronize')
                   return
                 }
-                document.value.operations.push(message.operation)
-                sequence.value = message.sequence
-                if (message.operation.type === 'visibility' && !pending.value[message.operation.id])
-                  resetHistory()
-              } else if (!known) {
+                if (requiresVector(operation, message.targetSequence)) {
+                  forceVector = true
+                  connection.close(4000, 'Restore vector document')
+                  return
+                }
+                appendSaved(operation, next)
+              } else if (
+                known ||
+                (ack && renderedSnapshot.value && next <= renderedSnapshot.value.sequence)
+              ) {
+                confirmSaved(operation)
+              } else {
                 // Ack cũ không có trong lịch sử không được làm mất một thao tác chưa lưu.
                 connection.close(4000, 'Resynchronize')
                 return
               }
-              acknowledgeHistory(message.operation)
-              // Chỉ bỏ nét chờ sau khi xử lý đúng sequence; nếu thiếu sequence thì giữ lại đến lúc tải lại phòng.
-              delete pending.value[message.operation.id]
-              delete previews.value[message.operation.id]
+            } else if (message.type === 'chat.message') {
+              // Chat đi chung socket nhưng có lịch sử riêng, không đổi document/sequence nét vẽ.
+              if (
+                status.value === 'connected' &&
+                room.value?.sharingEnabled &&
+                isChatMessage(message.message, roomId)
+              )
+                lastChatMessage.value = message.message
             } else if (message.type === 'operation.preview') {
+              if (status.value !== 'connected') return
               if (message.operation?.type === 'visibility') throw new Error('Invalid preview')
               previews.value[message.operation.id] = {
                 clientId: message.clientId,
@@ -483,10 +736,13 @@ export const useBoardStore = defineStore('board', () => {
                     'Dự án đã đủ 10 kết nối, mỗi tab vẽ tính một kết nối. Chờ người khác rời đi hoặc đóng bớt tab vẽ rồi bấm Kết nối lại.',
                   JOIN_REQUIRED: 'Chưa tham gia kết nối phòng. Hãy kết nối lại.',
                 }
-                if (message.code === 'ROOM_NOT_FOUND') forgetRoom(roomId)
-                else disconnect()
-                status.value = 'error'
-                error.value = reasons[message.code]!
+                const reason = reasons[message.code]!
+                if (message.code === 'ROOM_NOT_FOUND') closeRoomAccess(roomId, reason)
+                else {
+                  disconnect()
+                  status.value = 'error'
+                  error.value = reason
+                }
               } else if (message.code === 'SERVICE_UNAVAILABLE' || message.code === 'RATE_LIMIT')
                 socket?.close(4000, 'Retry pending operations')
             }
@@ -498,12 +754,14 @@ export const useBoardStore = defineStore('board', () => {
         // Khi mất kết nối, dọn trạng thái tạm và thử nối lại theo thời gian chờ tăng dần.
         connection.onclose = (event) => {
           if (current !== generation || socket !== connection) return
-          // Thu quyền là kết thúc truy cập, không phải mất mạng: xóa cache và báo trang dự án để quay về Studio.
-          if (event.code === 4403) {
-            forgetRoom(roomId)
-            status.value = 'error'
-            error.value = 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.'
-            revokedRoomId.value = roomId
+          // 4403 là thu quyền chia sẻ, 4404 là dự án bị xóa. Cả hai đều kết thúc phiên vẽ.
+          if (event.code === 4403 || event.code === 4404) {
+            closeRoomAccess(
+              roomId,
+              event.code === 4404
+                ? 'Dự án đã bị xóa.'
+                : 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.',
+            )
             return
           }
           if (event.code === 4401) {
@@ -535,14 +793,18 @@ export const useBoardStore = defineStore('board', () => {
       if (operation.type !== 'visibility' && personalOwner.value)
         historyActions.set(operation.id, { type: 'draw', targetId: operation.id })
       pending.value[operation.id] = operation
-      send('operation.commit', { operation })
+      sendCommit(operation)
       return true
     }
     return false
   }
   // Chỉ gửi preview khi có thể vẽ; lỗi ghi đang phục hồi không nhận thêm cử chỉ mới.
   function preview(operation: Operation) {
-    if (status.value === 'connected' && !hasSaveError.value)
+    if (
+      status.value === 'connected' &&
+      !hasSaveError.value &&
+      (socket?.bufferedAmount ?? 0) < 64 * 1024
+    )
       send('operation.preview', { operation })
   }
   // Báo cho phòng bỏ nét xem trước khi thao tác kéo bị hủy.
@@ -550,13 +812,26 @@ export const useBoardStore = defineStore('board', () => {
     if (status.value === 'connected') send('preview.cancel', { operationId })
   }
   // Xuất cả lịch sử gốc và thao tác chờ/lỗi, không làm mất nét bị ẩn hay sự kiện cần để khôi phục bản vẽ.
-  function exportDocument() {
+  async function exportDocument() {
+    const current = generation
+    const activeRoom = target
+    const snapshot = renderedSnapshot.value
+    const state = snapshot
+      ? await api<{ room: Room; document: DrawingDocumentV2 }>(
+          `/rooms/${activeRoom}/render-document`,
+        )
+      : null
+    if (state && (current !== generation || target !== activeRoom || state.room.id !== activeRoom))
+      throw new Error('Dự án đã thay đổi trong lúc tải bản vẽ.')
+    const saved = state ? normalizeDocument(state.document) : document.value
+    const savedIds = new Set(saved.operations.map((operation) => operation.id))
     return {
-      ...document.value,
+      ...saved,
       operations: [
-        ...document.value.operations,
-        ...Object.values(pending.value),
-        ...rejected.value,
+        ...saved.operations,
+        ...[...Object.values(pending.value), ...rejected.value].filter(
+          (operation) => !savedIds.has(operation.id),
+        ),
       ],
     }
   }
@@ -571,6 +846,10 @@ export const useBoardStore = defineStore('board', () => {
     sequence,
     members,
     operations,
+    confirmedOperations,
+    renderOperations,
+    pendingStrokes,
+    renderedSnapshot,
     pendingCount,
     canUndo,
     canRedo,
@@ -579,9 +858,11 @@ export const useBoardStore = defineStore('board', () => {
     rejected,
     remotePreviews,
     invitationUrl,
+    lastChatMessage,
     prepareRoom,
     leaveRoom,
     forgetRoom,
+    hasUnsavedChanges,
     rememberInvitation,
     setAccount,
     reset,

@@ -46,19 +46,27 @@ function sharingChanged(updated: Room) {
   projects.updateSharedRoom(updated)
 }
 
-// Server thu quyền 4403: ẩn Canvas, loại card và đưa về Studio với lý do, không tự thử lại socket.
+// Lấy lý do server kết thúc quyền truy cập để đưa người dùng về Studio và bỏ thẻ cũ.
 watch(
   () => board.revokedRoomId,
   (roomId) => {
-    if (!roomId || roomId !== route.params.id || !isSignedIn.value) return
+    const currentId = route.params.id
+    if (
+      !roomId ||
+      typeof currentId !== 'string' ||
+      roomId !== currentId.toLowerCase() ||
+      !isSignedIn.value
+    )
+      return
+    requestVersion++
     room.value = null
-    projects.removeRoom(roomId, 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.')
+    projects.removeRoom(roomId, board.error)
     void router.replace({ name: 'studio' })
   },
   { flush: 'sync' },
 )
 
-// Kiểm tra quyền trước khi nối lại; lỗi phiên có nút đăng nhập, lỗi mạng giữ cache và cho tải lại.
+// Kiểm tra quyền trước khi nối lại; mất quyền đã được xác nhận thì bỏ card/cache, lỗi tạm thời cho tải lại.
 async function loadRoom() {
   const version = ++requestVersion
   board.setAccount(isLoaded.value && isSignedIn.value ? (user.value?.id ?? '') : '')
@@ -72,7 +80,7 @@ async function loadRoom() {
     error.value = 'Đường dẫn dự án không hợp lệ.'
     return
   }
-  const roomId = route.params.id
+  const roomId = route.params.id.toLowerCase()
   room.value = board.prepareRoom(roomId)
   loading.value = true
   try {
@@ -94,6 +102,9 @@ async function loadRoom() {
     if (cause instanceof ApiError && [403, 404].includes(cause.status ?? 0)) {
       error.value =
         'Không tìm thấy dự án hoặc bạn chưa có quyền truy cập. Hãy kiểm tra liên kết với chủ dự án.'
+      // Loại card cũ và vô hiệu hóa GET danh sách đang chờ; HTML/404 chưa đủ để kết luận bị thu quyền.
+      if (cause.status === 404 && cause.code === 'ROOM_NOT_FOUND')
+        projects.removeRoom(roomId, error.value)
     } else if (cause instanceof ApiError && cause.status === 400) {
       error.value = 'Đường dẫn dự án không hợp lệ.'
     } else if (!(cause instanceof ApiError) || cause.status === 401) {
@@ -135,6 +146,7 @@ onBeforeUnmount(() => {
     :key="room.id"
     :room="room"
     :is-owner="room.ownerId === user?.id"
+    :current-user-id="user?.id ?? ''"
     @renamed="roomRenamed"
     @sharing-changed="sharingChanged"
   />
