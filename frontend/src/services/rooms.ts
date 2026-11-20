@@ -53,6 +53,19 @@ export async function deleteRoom(roomId: string): Promise<void> {
     throw new ApiError('SERVICE_UNAVAILABLE', 'The server did not confirm project deletion.')
 }
 
+// Xác nhận server đã gỡ tư cách thành viên trước khi bỏ thẻ khỏi Studio.
+export async function leaveRoom(roomId: string): Promise<void> {
+  const result = await api<{ id: string }>(
+    `/rooms/${encodeURIComponent(roomId)}/membership`,
+    'DELETE',
+  )
+  if (result.id !== roomId.toLowerCase())
+    throw new ApiError(
+      'SERVICE_UNAVAILABLE',
+      'The server did not confirm that you left the project.',
+    )
+}
+
 // Chỉ gọi sau xác nhận đổi link cũ; server giữ nét/thành viên và trả cùng token nếu gửi lại.
 export function upgradeRoomInvitation(roomId: string): Promise<SharingResult> {
   return api<SharingResult>(`/rooms/${encodeURIComponent(roomId)}/sharing/upgrade`, 'POST', {

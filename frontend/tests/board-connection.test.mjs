@@ -64,7 +64,7 @@ test('personal projects reject chat events and switching accounts clears the las
 class SignInRequiredError extends Error {}
 
 // Chạy store thật với socket/token/timer giả để kiểm tra thứ tự và phản hồi trễ mà không gọi dịch vụ.
-function setup(context, getToken = async () => 'test-session') {
+function setup(context, getToken = async () => 'test-session', api) {
   const sockets = []
   const timers = new Map()
   const network = new EventTarget()
@@ -108,7 +108,7 @@ function setup(context, getToken = async () => 'test-session') {
     '../drawing/codec': codec,
     '../chat/model': chatModel,
     '../services/auth': { getToken, SignInRequiredError },
-    '../services/api': { WS_URL: 'ws://test.invalid/ws' },
+    '../services/api': { WS_URL: 'ws://test.invalid/ws', api },
   }
   const module = { exports: {} }
   new Function(
@@ -158,13 +158,16 @@ function roomState(id = roomId) {
 }
 
 // Kết nối một dự án với tài khoản/chế độ cụ thể để kiểm tra sự kiện lịch sử trên store thật.
-async function connectedProject(context, { accountId = 'test-owner', shared = false } = {}) {
+async function connectedProject(
+  context,
+  { accountId = 'test-owner', shared = false, sharedHistory = false } = {},
+) {
   const session = setup(context)
   session.board.setAccount(accountId)
   await session.board.connect(roomId)
   const socket = session.sockets[0]
   socket.open()
-  socket.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000 })
+  socket.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000, sharedHistory })
   const state = roomState()
   state.room.sharingEnabled = shared
   socket.receive(state)
@@ -443,7 +446,7 @@ test('reopening an editor or changing accounts does not restore session undo sta
   assert.equal(board.canRedo, false)
 })
 
-test('shared owners and members cannot create session history through project undo or redo', async (context) => {
+test('shared history stays disabled on a server without support and for outsiders in private projects', async (context) => {
   for (const options of [{ shared: true }, { accountId: 'other-member' }]) {
     const { board, socket, state } = await connectedProject(context, options)
     board.commit(newStroke(state))
@@ -455,6 +458,60 @@ test('shared owners and members cannot create session history through project un
     assert.equal(board.canRedo, false)
     assert.equal(socket.sent.length, before)
   }
+})
+
+test('a shared member undoes strokes in project order and can redo another member’s undo', async (context) => {
+  const { board, socket, state } = await connectedProject(context, {
+    accountId: 'member',
+    shared: true,
+    sharedHistory: true,
+  })
+  const own = newStroke(state, 'eraser')
+  const other = newStroke(state)
+  assert.equal(board.canUndo, true)
+  board.commit(own)
+  acknowledgeLast(board, socket)
+  socket.receive({ type: 'operation.committed', sequence: 2, operation: other })
+  board.undo()
+  const attempted = socket.sent.at(-1).operation
+  assert.equal(attempted.targetId, other.id)
+  socket.receive({ type: 'operation.committed', sequence: 3, operation: visibility(other.id) })
+  socket.receive({ type: 'error', code: 'HISTORY_CHANGED', operationId: attempted.id })
+  assert.equal(board.pendingCount, 0)
+  assert.equal(board.rejected.length, 0)
+  assert.equal(board.canUndo, true)
+  assert.equal(board.canRedo, true)
+  board.redo()
+  const restored = acknowledgeLast(board, socket)
+  assert.equal(restored.targetId, other.id)
+  assert.equal(restored.visible, true)
+  assert.deepEqual(board.confirmedOperations, [...state.document.operations, own, other])
+
+  board.undo()
+  assert.equal(acknowledgeLast(board, socket).targetId, other.id)
+  socket.receive({ type: 'operation.committed', sequence: 6, operation: newStroke(state) })
+  assert.equal(board.canRedo, false)
+})
+
+test('shared undo reads the vector target when the latest visible stroke is in a PNG snapshot', async (context) => {
+  const state = roomState()
+  state.room.sharingEnabled = true
+  const { board, sockets } = setup(context, undefined, async (path) => {
+    assert.equal(path, `/rooms/${roomId}/render-document`)
+    return { ...state, sequence: 4 }
+  })
+  board.setAccount('member')
+  await board.connect(roomId)
+  const [socket] = sockets
+  socket.open()
+  socket.receive({ type: 'auth.ok', expiresAt: Date.now() + 60000, sharedHistory: true })
+  socket.receive({ ...state, sequence: 4, document: model.emptyDocument() })
+  board.renderedSnapshot = { bitmap: { close() {} }, sequence: 4, visibleCount: 1 }
+  assert.equal(board.canUndo, true)
+  board.undo()
+  await Promise.resolve()
+  assert.equal(socket.sent.at(-1).operation.targetId, state.document.operations[0].id)
+  assert.equal(socket.sent.at(-1).operation.visible, false)
 })
 
 test('a rejected undo restores visible strokes without creating a redo acknowledgement', async (context) => {
@@ -476,7 +533,7 @@ test('a rejected undo restores visible strokes without creating a redo acknowled
   assert.deepEqual(board.rejected, [hidden])
 })
 
-test('a visibility change from another tab resets the local history and retains canonical drawing state', async (context) => {
+test('a visibility change from another tab removes its target from local history', async (context) => {
   const { board, socket, state } = await connectedProject(context)
   const local = newStroke(state)
   board.commit(local)
@@ -1449,6 +1506,7 @@ test('cache eviction preserves projects that still have unacknowledged work', as
 for (const [code, reason] of [
   [4403, /tắt chia sẻ/],
   [4404, /đã bị xóa/],
+  [4405, /đã thoát dự án/],
 ]) {
   test(`${code} clears room data and cached sessions without reconnecting`, async (context) => {
     const { board, sockets, timers } = setup(context)

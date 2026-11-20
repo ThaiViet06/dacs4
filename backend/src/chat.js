@@ -56,7 +56,11 @@ function chatInput(value) {
 
 class ChatService {
   // Tái sử dụng transaction và kiểm tra thành viên của repository dự án, không tạo pool riêng.
-  constructor(repository, cipher) { this.repository = repository; this.cipher = cipher; }
+  constructor(repository, cipher, lookupProfiles = async () => []) {
+    this.repository = repository;
+    this.cipher = cipher;
+    this.lookupProfiles = lookupProfiles;
+  }
 
   // Chỉ yêu cầu bảng chat khi đã cấu hình khóa; ứng dụng vẽ cũ vẫn khởi động nếu chưa bật chat.
   async ready() {
@@ -105,6 +109,23 @@ class ChatService {
     if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied.");
     this.available(room);
     return (room.messages || []).map((row) => this.message(row));
+  }
+
+  // Lấy tên/ảnh của người xem và tác giả trong 50 tin gần nhất sau khi kiểm tra quyền chat.
+  async profiles(userId, roomId) {
+    const { rows: [room] } = await this.repository.pool.query(
+      `SELECT r.sharing_enabled, ARRAY(
+          SELECT DISTINCT recent.author_id FROM (
+            SELECT author_id FROM drawing.room_messages WHERE room_id=r.id ORDER BY sequence DESC LIMIT 50
+          ) recent
+        ) AS authors
+        FROM drawing.rooms r JOIN drawing.room_members member ON member.room_id=r.id AND member.user_id=$2
+        WHERE r.id=$1 AND (r.sharing_enabled OR r.owner_id=$2)`,
+      [roomId, userId],
+    );
+    if (!room) throw new AppError(404, "ROOM_NOT_FOUND", "Room not found or access denied.");
+    this.available(room);
+    return this.lookupProfiles([...new Set([userId, ...room.authors])]);
   }
 
   // Khóa dự án để cấp thứ tự chat riêng; chỉ trả thành công sau COMMIT, retry UUID cũ không gửi trùng.

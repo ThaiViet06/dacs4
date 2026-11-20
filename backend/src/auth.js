@@ -1,4 +1,4 @@
-const { verifyToken: verifyClerkToken } = require("@clerk/backend");
+const { createClerkClient, verifyToken: verifyClerkToken } = require("@clerk/backend");
 
 // Lấy issuer cố định từ publishable key cấu hình; không tin issuer do token gửi lên tự khai báo.
 function issuerFromKey(publishableKey) {
@@ -37,4 +37,35 @@ function createTokenVerifier({ clerkPublishableKey, clerkSecretKey, origins }, {
   };
 }
 
-module.exports = { createTokenVerifier };
+// Đọc gộp hồ sơ Clerk ngoài luồng gửi tin. Cache riêng tên và ảnh trong 5 phút.
+function createChatProfileLookup({ clerkSecretKey }, { users } = createClerkClient({ secretKey: clerkSecretKey })) {
+  const cache = new Map();
+
+  // Giữ hồ sơ đã biết khi Clerk tạm thời lỗi và chỉ trả các tài khoản được yêu cầu.
+  return async function lookupProfiles(userIds) {
+    const now = Date.now();
+    const missing = userIds.filter((id) => (cache.get(id)?.expiresAt ?? 0) <= now);
+    if (missing.length) {
+      try {
+        const { data } = await users.getUserList({ userId: missing, limit: missing.length });
+        const byId = new Map(data.map((user) => [user.id, user]));
+        for (const id of missing) {
+          const user = byId.get(id);
+          const profile = user ? {
+            userId: id,
+            name: user.fullName?.trim() || user.username?.trim() || null,
+            avatarUrl: user.hasImage && user.imageUrl?.startsWith("https://") ? user.imageUrl : null,
+          } : null;
+          cache.delete(id);
+          cache.set(id, { profile, expiresAt: now + (profile ? 300000 : 30000) });
+        }
+        while (cache.size > 512) cache.delete(cache.keys().next().value);
+      } catch {
+        // Tin nhắn vẫn hiển thị với hồ sơ đã có hoặc biểu tượng mặc định.
+      }
+    }
+    return userIds.map((id) => cache.get(id)?.profile).filter(Boolean);
+  };
+}
+
+module.exports = { createTokenVerifier, createChatProfileLookup };

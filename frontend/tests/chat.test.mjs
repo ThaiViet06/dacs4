@@ -53,6 +53,7 @@ async function flush() {
 // Mount script/lifecycle thật, chỉ thay HTTP bằng Promise giữ chờ để điều khiển các cuộc đua phản hồi.
 function setup(context) {
   const requests = []
+  const profileRequests = []
   const sends = []
   const dependencies = {
     '../chat/model': model,
@@ -60,6 +61,8 @@ function setup(context) {
     '../services/chat': {
       getChatMessages: (id) =>
         new Promise((resolve, reject) => requests.push({ id, resolve, reject })),
+      getChatProfiles: (id) =>
+        new Promise((resolve, reject) => profileRequests.push({ id, resolve, reject })),
       postChatMessage: (id, input) =>
         new Promise((resolve, reject) => sends.push({ id, input, resolve, reject })),
     },
@@ -100,7 +103,7 @@ function setup(context) {
     }
   }
   context.after(unmount)
-  return { state, props, requests, sends, unmount }
+  return { state, props, requests, profileRequests, sends, unmount }
 }
 
 // Chuẩn bị lịch sử trống đã xác nhận để test tập trung vào việc gửi tin.
@@ -136,6 +139,36 @@ test('a live message received during history loading survives the HTTP response'
     [first.id, second.id],
   )
   assert.equal(state.loaded.value, true)
+})
+
+test('names and avatars enrich chat without blocking messages or leaking a previous project profile', async (context) => {
+  const { state, props, requests, profileRequests } = setup(context)
+  requests[0].resolve({ messages: [message()] })
+  await flush()
+  assert.equal(state.loaded.value, true)
+  assert.equal(state.entries.value[0].name, 'Thành viên')
+  const profile = {
+    userId: 'member',
+    name: 'Mai Nguyễn',
+    avatarUrl: 'https://img.clerk.com/profile',
+  }
+  profileRequests[0].resolve({ profiles: [profile] })
+  await flush()
+  assert.equal(state.entries.value[0].name, profile.name)
+  assert.equal(state.entries.value[0].avatar, profile.avatarUrl)
+  props.incomingMessage = message(2)
+  await flush()
+  assert.equal(profileRequests.length, 1)
+  props.incomingMessage = message(3, { authorId: 'new-member' })
+  await flush()
+  assert.equal(profileRequests.length, 2)
+  props.roomId = otherRoomId
+  requests[1].resolve({ messages: [message(1, { roomId: otherRoomId })] })
+  profileRequests[1].resolve({ profiles: [profile] })
+  await flush()
+  assert.equal(state.entries.value[0].name, 'Thành viên')
+  assert.equal(state.entries.value[0].avatar, '')
+  assert.equal(profileRequests.at(-1).id, otherRoomId)
 })
 
 test('sending waits for confirmation and reuses the same UUID after an uncertain response', async (context) => {

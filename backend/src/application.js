@@ -81,6 +81,11 @@ function createApplication({ repository, chat, snapshots, verifyToken, origins, 
     if (!chat) throw new AppError(503, "CHAT_UNAVAILABLE", "Chat is temporarily unavailable.");
     res.json({ messages: await chat.list(req.userId, id(req)) });
   }));
+  // Tải hồ sơ riêng để Clerk không trì hoãn xác nhận và phát tin nhắn.
+  app.get("/api/rooms/:id/messages/profiles", route(async (req, res) => {
+    if (!chat) throw new AppError(503, "CHAT_UNAVAILABLE", "Chat is temporarily unavailable.");
+    res.json({ profiles: await chat.profiles(req.userId, id(req)) });
+  }));
   // Lưu bản mã trước khi broadcast; xếp cùng hàng đợi với thu quyền để không lọt tin sau tắt chia sẻ.
   app.post("/api/rooms/:id/messages", route(async (req, res) => {
     if (!chat) throw new AppError(503, "CHAT_UNAVAILABLE", "Chat is temporarily unavailable.");
@@ -104,7 +109,7 @@ function createApplication({ repository, chat, snapshots, verifyToken, origins, 
     const { enabled } = parse(sharingSchema, req.body);
     const result = await changingAccess(roomId, async () => {
       const saved = await repository.setSharing(req.userId, roomId, enabled);
-      if (!enabled) revokeCollaborators(roomId, saved.room.ownerId);
+      if (!enabled) revokeRoomConnections(roomId, (userId) => userId !== saved.room.ownerId, 4403, "Project sharing was disabled");
       return saved;
     });
     res.json(result);
@@ -123,6 +128,15 @@ function createApplication({ repository, chat, snapshots, verifyToken, origins, 
       await repository.deleteRoom(req.userId, roomId);
       repository.sync?.tails.delete(roomId);
       disconnectDeletedRoom(roomId);
+    });
+    res.json({ id: roomId });
+  }));
+  // Xác thực người thoát bằng phiên Clerk và chỉ đóng các tab của họ sau COMMIT.
+  app.delete("/api/rooms/:id/membership", route(async (req, res) => {
+    const roomId = id(req);
+    await changingAccess(roomId, async () => {
+      await repository.leaveRoom(req.userId, roomId);
+      revokeRoomConnections(roomId, (userId) => userId === req.userId, 4405, "You left the project");
     });
     res.json({ id: roomId });
   }));
@@ -225,13 +239,13 @@ function createApplication({ repository, chat, snapshots, verifyToken, origins, 
     socket.roomId = undefined;
     presence(roomId);
   }
-  // Thu socket khỏi phòng ngay, bỏ frame đang chờ và báo 4403 cho các cộng tác viên; giữ kết nối của chủ.
-  function revokeCollaborators(roomId, ownerId) {
+  // Đóng mọi tab của tài khoản bị thu quyền và bỏ qua frame đang chờ của các kết nối đó.
+  function revokeRoomConnections(roomId, matches, code, reason) {
     for (const socket of [...(rooms.get(roomId) || [])]) {
-      if (socket.identity.userId === ownerId) continue;
+      if (!matches(socket.identity.userId)) continue;
       socket.accessRevoked = true;
       leave(socket);
-      socket.close(4403, "Project sharing was disabled");
+      socket.close(code, reason);
     }
   }
   // Đưa cả chủ lẫn thành viên ra khỏi dự án đã xóa và bỏ các frame đang chờ xử lý.
@@ -280,7 +294,9 @@ function createApplication({ repository, chat, snapshots, verifyToken, origins, 
           clearTimeout(expiration);
           expiration = setTimeout(() => socket.close(4401, "Session expired"), Math.min(identity.expiresAt - Date.now(), 2147483647));
           send(socket, "auth.ok", { clientId: socket.clientId, expiresAt: identity.expiresAt,
-            ...(repository.sync ? { drawingSync: true } : {}) });
+            ...(repository.sync ? { drawingSync: true } : {}),
+            ...(repository.sharedUndo ? { sharedUndo: true } : {}),
+            ...(repository.sharedHistory ? { sharedHistory: true } : {}) });
           return;
         }
         if (!socket.identity || socket.identity.expiresAt <= Date.now()) throw new AppError(401, "AUTH_REQUIRED", "Authenticate first.");

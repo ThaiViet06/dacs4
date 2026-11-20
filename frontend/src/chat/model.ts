@@ -7,6 +7,12 @@ export interface ChatMessage {
   createdAt: string
 }
 
+export interface ChatProfile {
+  userId: string
+  name: string | null
+  avatarUrl: string | null
+}
+
 // Chỉ nhận tin hợp lệ của đúng dự án; thông điệp chat hỏng không được ảnh hưởng Canvas.
 export function isChatMessage(value: unknown, roomId: string): value is ChatMessage {
   if (!value || typeof value !== 'object') return false

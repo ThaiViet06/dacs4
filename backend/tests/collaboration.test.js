@@ -292,7 +292,7 @@ test("a lost visibility acknowledgement reloads hidden stroke IDs and retry retu
   assert.equal(stored().operations.length, 2);
 });
 
-test("shared project owners and members cannot create visibility through v2", { timeout: 5000 }, async (context) => {
+test("shared members undo and redo other people's strokes, and racing undos write once", { timeout: 5000 }, async (context) => {
   const { join, stored } = await setup(context);
   const owner = await join("owner");
   const member = await join("member");
@@ -300,15 +300,36 @@ test("shared project owners and members cannot create visibility through v2", { 
   owner.send("operation.commit", { operation: original });
   await owner.next("operation.committed");
   await member.next("operation.committed");
-  for (const [client, code] of [[owner, "PERSONAL_MODE_REQUIRED"], [member, "OWNER_REQUIRED"]]) {
-    const hidden = visibility(original.id);
-    client.send("operation.commit", { operation: hidden });
-    const error = await client.next("error");
-    assert.equal(error.code, code);
-    assert.equal(error.operationId, hidden.id);
-  }
-  assert.equal(stored().operations.length, 1);
-  assert.equal(stored().room.sequence, 1);
+  const own = stroke();
+  member.send("operation.commit", { operation: own });
+  await owner.next("operation.committed");
+  await member.next("operation.committed");
+  const hidden = visibility(original.id);
+  member.send("operation.commit", { operation: hidden });
+  assert.deepEqual((await member.next("operation.committed")).operation, hidden);
+  assert.deepEqual((await owner.next("operation.committed")).operation, hidden);
+  member.send("operation.commit", { operation: hidden });
+  const retry = await member.next("operation.committed");
+  assert.equal(retry.sequence, 3);
+  assert.equal(retry.duplicate, true);
+  const shown = { ...visibility(original.id), visible: true };
+  owner.send("operation.commit", { operation: shown });
+  assert.deepEqual((await member.next("operation.committed")).operation, shown);
+  assert.deepEqual((await owner.next("operation.committed")).operation, shown);
+
+  const fromOwner = visibility(own.id);
+  const fromMember = visibility(own.id);
+  owner.send("operation.commit", { operation: fromOwner });
+  member.send("operation.commit", { operation: fromMember });
+  const winner = await owner.next("operation.committed");
+  assert.deepEqual((await member.next("operation.committed")).operation, winner.operation);
+  const loser = winner.operation.id === fromOwner.id ? member : owner;
+  const error = await loser.next("error");
+  assert.equal(error.code, "HISTORY_CHANGED");
+  assert.equal(error.operationId, loser === member ? fromMember.id : fromOwner.id);
+  const late = await join("member");
+  assert.deepEqual(late.state.document.operations, [original, own, hidden, shown, winner.operation]);
+  assert.equal(stored().room.sequence, 5);
 });
 
 test("v2 schema failures identify pending events and visibility is never broadcast as a preview", { timeout: 5000 }, async (context) => {

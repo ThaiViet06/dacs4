@@ -106,8 +106,9 @@ có hiệu ứng tạm thời; backend từ chối quyền thì gỡ hiệu ứn
 Export vẫn có nét bị ẩn, lịch sử và thao tác chờ/lỗi để tránh mất dữ liệu.
 
 WebSocket dùng `{ v: 2, type, ... }` ở cả hai phía, đọc được tài liệu v1/v2.
-Preview chỉ chứa nét; ẩn/hiện gửi bằng commit, chỉ chủ Cá nhân khi không còn thao
-tác chờ/lỗi. Reconnect đối chiếu UUID trong toàn bộ lịch sử, gồm nét bị ẩn.
+Preview chỉ chứa nét. Ẩn/hiện gửi bằng commit khi không còn thao tác chờ/lỗi.
+Trong dự án Chung, server chấp nhận thao tác của thành viên lên nét cùng dự án.
+Reconnect đối chiếu UUID trong toàn bộ lịch sử, gồm nét bị ẩn.
 Backend khác phiên bản thì khóa vẽ và giữ thao tác chờ trong RAM; cập nhật backend
 rồi bấm **Kết nối lại** để khôi phục thao tác chờ. Ngày 16/11/2026, người dùng
 xác nhận hai tài khoản thật vẽ/hình/tẩy đồng bộ, F5 giữ nét/vẽ tiếp và Offline/Online
@@ -125,21 +126,22 @@ Dùng thẻ dự án hoặc thẻ “+” trên `/studio` để mở editor tự
 | `/studio/:id` | Dự án tự lưu, tải quyền/metadata/kết nối (`ProjectView`) |
 
 `/gallery` và `/rooms/:id` cũ chỉ chuyển hướng, giữ query/hash. Các editor dùng
-chung `StudioEditor.vue`. Ctrl+Z hoàn tác; Ctrl+Y hoặc Ctrl+Shift+Z làm lại trên
-bản nháp hoặc dự án Cá nhân do bạn sở hữu. Ô nhập văn bản và dialog giữ phím tắt
-riêng; chế độ Chung không có điều khiển undo/redo.
+chung `StudioEditor.vue`. Ctrl+Z hoàn tác. Ctrl+Y hoặc Ctrl+Shift+Z làm lại.
+Trong dự án Chung, nút/phím tắt dùng lịch sử chung khi backend báo
+`sharedHistory`. Hoàn tác ẩn nét đang hiện gần nhất, kể cả của người khác.
+Ô nhập văn bản và dialog giữ phím tắt riêng.
 
 Test render dùng template `StudioEditor` thật với component con giả để kiểm tra
-nút theo vai trò: thành viên được vẽ, chủ được đổi tên/chia sẻ, lịch sử chỉ hiện
-cho chủ Cá nhân. Test listener kiểm tra thành viên/chủ Chung không thay nét bằng
-Ctrl+Z/Y/Shift+Z. Nghiệm thu bằng hai tài khoản thật được theo dõi trong `../Plans.md`.
+nút theo vai trò. Chủ được đổi tên/chia sẻ, thành viên cùng chỉnh sửa có thể dùng
+lịch sử chung. Test listener kiểm tra Ctrl+Z/Y/Shift+Z trong editor.
 
-Lịch sử dự án chỉ gồm nét mới của lần mở editor; nét/tẩy được ẩn/hiện bằng sự
+Lịch sử Cá nhân chỉ gồm nét mới của lần mở editor. Nét/tẩy được ẩn/hiện bằng sự
 kiện, không xóa nét gốc. Nút khóa khi chờ lưu, lỗi hoặc mất mạng; stack chỉ chuyển
 sau ACK hoặc room.state xác nhận UUID. ACK lặp/mất không chuyển stack hai lần.
 Vẽ nét mới đã xác nhận sẽ bỏ nhánh redo. F5, rời editor, đổi tài khoản/chế độ bắt
-đầu stack mới; đổi tên không xóa stack. Reconnect cùng phiên giữ stack, còn thay
-đổi ẩn/hiện từ tab khác bắt đầu lịch sử mới trên tài liệu chuẩn. Bản nháp vẫn có
+đầu stack mới; đổi tên không xóa stack. Thay đổi ẩn/hiện từ tab khác chỉ loại nét
+bị tác động khỏi stack hiện có. Với lịch sử Chung, nếu nét cần hoàn tác nằm trong
+ảnh nền, editor đọc vector khi người dùng bấm Hoàn tác. Bản nháp vẫn có
 lịch sử riêng như trước. Ngày 16/11/2026, người dùng xác nhận Ctrl+Z/Y và F5 trên
 dự án Cá nhân đã lưu giữ đúng kết quả; restart backend tự nối lại, giữ bản vẽ và
 vẽ/undo tiếp được. Đối chiếu Supabase chỉ đọc xác nhận lịch sử cũ không đổi.
@@ -149,7 +151,7 @@ Dialog kiểm tra 1–100 ký tự, chặn gửi trùng, chỉ đổi tên edito
 không thay nét/sequence. Lỗi giữ nội dung nhập để thử lại, phản hồi sau khi rời trang
 bị bỏ qua. Chrome với dịch vụ giả đã kiểm tra quyền, lỗi và bố cục 390px;
 người dùng đã xác nhận tên editor/card và nét giữ đúng sau mở lại/F5 bằng tài khoản thật.
-Hai tài khoản thật đã xác nhận thành viên không có nút quản lý/undo, vẫn vẽ đồng
+Hai tài khoản thật đã xác nhận thành viên không có nút quản lý, vẫn vẽ đồng
 bộ và F5 giữ nét; kết quả chi tiết trong `../Plans.md`.
 
 Store `draft.ts` giữ bản nháp và undo/redo độc lập với `board.ts`. Đi qua Trang chủ,
@@ -207,6 +209,10 @@ Menu **⋮** trên thẻ của chủ cho phép **Đổi tên**, **Đổi chế �
 **Xóa dự án**. Chọn **Cùng chỉnh sửa** để mời qua link hoặc **Cá nhân** để thu
 quyền thành viên. Thẻ chuyển nhóm khi server xác nhận. Hộp thoại xóa nêu rõ
 dữ liệu sẽ bị xóa vĩnh viễn và yêu cầu xác nhận trước khi gửi.
+
+Menu **⋮** của thành viên có mục **Thoát dự án**. Khi máy chủ xác nhận, Studio gỡ
+thẻ và các tab đang mở dự án bằng tài khoản đó trở về Studio. Thành viên có thể
+tham gia lại bằng link mời còn hiệu lực.
 
 Mở card cũ mà API xác nhận `ROOM_NOT_FOUND` sẽ bỏ card khỏi cache Studio và
 vô hiệu hóa phản hồi danh sách đang chờ. HTML/404 từ dịch vụ trung gian không đủ

@@ -159,15 +159,19 @@ sự kiện chỉ ẩn/hiện một nét xuất hiện trước đó, không tha
 Giới hạn canvas, hình học và 5 MiB vẫn áp dụng.
 
 `PostgresRepository.commit()` đã ghi sự kiện vào `room_operations.payload` cùng
-sequence trong transaction hiện có, chỉ trả kết quả sau COMMIT. Sự kiện mới yêu
-cầu chủ dự án Cá nhân; retry đúng UUID/payload trả sequence cũ, không thêm bản ghi.
-JSONB được so sánh theo giá trị thay vì thứ tự khóa. Khi đã bật chia sẻ, chủ vẫn
-nhận lại xác nhận của sự kiện cũ, còn sự kiện ẩn/hiện mới bị chặn.
+sequence trong transaction hiện có và trả kết quả sau COMMIT. Thành viên dự án
+Chung có thể ẩn/hiện nét bất kỳ trong dự án đó. Khi trạng thái nét đã trùng với
+yêu cầu, backend trả `HISTORY_CHANGED` và giữ sequence. Retry đúng UUID/payload
+trả sequence cũ. JSONB được so sánh theo giá trị.
+
+Chạy `node scripts/migrate.js` và restart backend để dùng hàm ghi v2 của
+`006_collaborative_history.sql`. WebSocket báo `sharedHistory` để giao diện bật
+lịch sử dùng chung. Cả nét trong tài liệu gốc và nét đã lưu sau đó đều có thể làm đích.
 
 `document()` ghép lịch sử theo sequence, giữ v1 khi chỉ có nét cũ và trả v2 khi
 có ẩn/hiện; giữ cả nét gốc và các sự kiện, không xóa dữ liệu để hoàn tác.
-Tải một mốc sequence chỉ lấy lịch sử đến mốc đó. Không cần migration vì payload
-đã là JSONB. Đã kiểm tra bằng SQL giả và đối chiếu Supabase thật ngày 16/11/2026:
+Tải một mốc sequence chỉ lấy lịch sử đến mốc đó. Lịch sử cá nhân đã kiểm tra bằng
+SQL giả và đối chiếu Supabase thật ngày 16/11/2026:
 dự án `hi` sau undo/redo/F5 có sequence 5 (2 nét/3 visibility), hiện 1 nét. Người
 dùng restart backend rồi vẽ/undo tiếp: sequence 7 (3 nét/4 visibility), vẫn hiện
 1 nét; đối chiếu đầy đủ lịch sử qua sequence 5 không đổi. Các truy vấn kiểm tra
@@ -177,8 +181,8 @@ WebSocket dùng v2 cho auth/join/commit/phản hồi; payload tài liệu vẫn 
 v1 hoặc v2. Commit nhận nét hoặc ẩn/hiện, preview chỉ nhận nét. Schema lỗi giữ
 operation ID để client xử lý thao tác chờ; sự kiện lịch sử không phát preview.
 Repository kiểm tra quyền và chỉ trả thành công sau COMMIT; UUID lặp chỉ xác nhận
-cho người gửi. Frontend đã có store/Canvas v2 và nút/phím undo/redo cho chủ Cá
-nhân, cập nhật stack sau ACK. Người dùng đã nghiệm thu F5/restart và vẽ/undo tiếp
+cho người gửi. Frontend dựng lịch sử chung từ các sự kiện được xác nhận.
+Người dùng đã nghiệm thu F5/restart và vẽ/undo tiếp
 trên dự án Cá nhân; các kiểm tra quyền/ghép luồng còn lại theo [Plans.md](../Plans.md).
 
 Chạy backend và frontend cùng bản sau cập nhật; protocol v1 không còn được nhận,
@@ -207,6 +211,13 @@ editor/card và nét vẽ giữ đúng sau mở lại/F5 bằng tài khoản th�
 và tin nhắn thuộc dự án. Server đóng các WebSocket của dự án với mã `4404` để
 editor trở về Studio. Test SQL giả kiểm tra quyền và rollback. Ca Chrome với
 danh tính test và Supabase thật đã đối chiếu việc xóa các bản ghi liên quan.
+
+## API thoát dự án
+
+`DELETE /api/rooms/:id/membership` lấy tài khoản thành viên từ token Clerk và
+gỡ đúng tư cách thành viên đó. Sau COMMIT, server trả `200 { id }` và đóng các
+WebSocket của tài khoản vừa thoát với mã `4405`. Thành viên có thể sử dụng link
+mời còn hiệu lực để tham gia lại.
 
 ## API đọc trạng thái chia sẻ
 
@@ -365,6 +376,11 @@ Chỉ thành viên của dự án đang chia sẻ được đọc/gửi chat. `G
 (UUID và 1–1.000 ký tự), danh tính lấy từ token. GET trả 50 tin mới nhất theo thứ tự
 cũ đến mới. HTTP và sự kiện WebSocket `chat.message` chỉ xác nhận sau COMMIT;
 retry cùng UUID/nội dung trả lại tin cũ. Chat có sequence riêng với bản vẽ.
+
+`GET /api/rooms/:id/messages/profiles` kiểm tra cùng quyền truy cập và trả tên,
+ảnh đại diện của người xem và tác giả trong 50 tin gần nhất. Backend lấy gộp hồ sơ
+Clerk, cache 5 phút và chỉ chuyển thông tin hiển thị cho giao diện. Yêu cầu này
+chạy riêng với việc lưu và phát tin nhắn. [Clerk getUserList](https://clerk.com/docs/reference/backend/user/get-user-list)
 
 Nội dung được mã hóa AES-256-GCM bằng `node:crypto` trước khi ghi vào
 `drawing.room_messages.ciphertext`. IV mới cho mỗi tin, tag 16 byte, AAD ràng buộc

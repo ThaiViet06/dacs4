@@ -169,8 +169,9 @@ test("only the personal project owner may create visibility events", async (cont
     const event = visibility(original.id);
     await assert.rejects(repository.commit("outsider", roomId, event), { code: "ROOM_NOT_FOUND" });
     await assert.rejects(repository.commit("owner", randomUUID(), event), { code: "ROOM_NOT_FOUND" });
-    await assert.rejects(repository.commit("member", roomId, event), { code: sharingEnabled ? "OWNER_REQUIRED" : "ROOM_NOT_FOUND" });
-    if (sharingEnabled) await assert.rejects(repository.commit("owner", roomId, event), { code: "PERSONAL_MODE_REQUIRED" });
+    if (sharingEnabled)
+      await assert.rejects(repository.commit("member", roomId, visibility(randomUUID())), { code: "INVALID_INPUT" });
+    else await assert.rejects(repository.commit("member", roomId, event), { code: "ROOM_NOT_FOUND" });
     assert.deepEqual(snapshot(), before);
   }
 });
@@ -203,7 +204,7 @@ test("lost-ack retries retain the original sequence across JSONB key order and r
   assert.deepEqual(snapshot(), before);
 });
 
-test("a saved visibility retry remains confirmable after sharing is enabled but new events are rejected", async (context) => {
+test("a saved visibility retry remains confirmable after sharing is enabled", async (context) => {
   const { repository, roomId, snapshot } = fixture(context);
   const original = stroke();
   const event = visibility(original.id);
@@ -212,7 +213,6 @@ test("a saved visibility retry remains confirmable after sharing is enabled but 
   await repository.setSharing("owner", roomId, true);
   const before = snapshot();
   assert.deepEqual(await repository.commit("owner", roomId, event), { ...saved, duplicate: true });
-  await assert.rejects(repository.commit("owner", roomId, visibility(original.id, true)), { code: "PERSONAL_MODE_REQUIRED" });
   assert.deepEqual((await repository.state("member", roomId)).document.operations, [original, event]);
   assert.deepEqual(snapshot(), before);
 });
@@ -295,14 +295,14 @@ test("visibility locked before a sharing change commits first and remains in the
   assert.deepEqual(state.document.operations, [original, event]);
 });
 
-test("visibility queued after a sharing change checks the newly committed mode and does not write", { timeout: 5000 }, async (context) => {
-  const { repository, roomId, snapshot, pauseCommit } = fixture(context);
+test("a member undo queued after access is revoked cannot write", { timeout: 5000 }, async (context) => {
+  const { repository, roomId, snapshot, pauseCommit } = fixture(context, { sharingEnabled: true });
   const original = stroke();
-  await repository.commit("owner", roomId, original);
+  await repository.commit("member", roomId, original);
   const gate = pauseCommit();
-  const sharing = repository.setSharing("owner", roomId, true);
+  const sharing = repository.setSharing("owner", roomId, false);
   await gate.reached;
-  const committing = assert.rejects(repository.commit("owner", roomId, visibility(original.id)), { code: "PERSONAL_MODE_REQUIRED" });
+  const committing = assert.rejects(repository.commit("member", roomId, visibility(original.id)), { code: "ROOM_NOT_FOUND" });
   gate.release();
   await Promise.all([sharing, committing]);
   assert.equal(snapshot().operations.length, 1);

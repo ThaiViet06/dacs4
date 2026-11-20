@@ -68,6 +68,18 @@ async function loadSnapshot(roomId: string, sequence: number) {
   throw new Error('Invalid snapshot dimensions')
 }
 
+// Lượt vẽ mới kết thúc nhánh làm lại. Sau lượt đó, tìm nét ẩn gần nhất chưa được hiện lại.
+function sharedRedoTarget(events: DrawingEvent[]) {
+  const restored = new Set<string>()
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!
+    if (event.type !== 'visibility') break
+    const target = event.targetId.toLowerCase()
+    if (event.visible) restored.add(target)
+    else if (!restored.has(target)) return event.targetId
+  }
+}
+
 // Giữ phiên dự án theo tài khoản; bản nháp Vẽ thử nằm ở store draft riêng.
 export const useBoardStore = defineStore('board', () => {
   const document = ref<DrawingDocumentV2>(normalizeDocument(emptyDocument()))
@@ -100,6 +112,8 @@ export const useBoardStore = defineStore('board', () => {
   const sessions = new Map<string, RoomSession>()
   const undoStack = ref<string[]>([])
   const redoStack = ref<string[]>([])
+  const sharedUndo = ref(false)
+  const readingHistory = ref(false)
   const historyActions = new Map<string, HistoryAction>()
   let accountId = ''
   // Giữ lịch sử đầy đủ trong document; Canvas chỉ nhận nét đang hiện, kể cả hiệu ứng của thao tác chờ xác nhận.
@@ -124,19 +138,38 @@ export const useBoardStore = defineStore('board', () => {
         })
       : confirmedOperations.value
   })
-  // Chỉ chủ Cá nhân có lịch sử riêng; mọi thao tác phải lưu xong trước khi hoàn tác/làm lại.
-  const personalOwner = computed(
-    () => room.value?.ownerId === accountId && room.value?.sharingEnabled === false,
+  // Dự án Chung dùng lịch sử bản vẽ. Dự án Cá nhân giữ lịch sử riêng của phiên.
+  const historyAllowed = computed(
+    () =>
+      Boolean(accountId) &&
+      Boolean(
+        room.value &&
+        (room.value.sharingEnabled ? sharedUndo.value : room.value.ownerId === accountId),
+      ),
   )
   const historyReady = computed(
     () =>
-      personalOwner.value &&
+      historyAllowed.value &&
       status.value === 'connected' &&
+      !readingHistory.value &&
       !pendingCount.value &&
       !rejected.value.length,
   )
-  const canUndo = computed(() => historyReady.value && undoStack.value.length > 0)
-  const canRedo = computed(() => historyReady.value && redoStack.value.length > 0)
+  const sharedRedo = computed(() =>
+    room.value?.sharingEnabled ? sharedRedoTarget(document.value.operations) : undefined,
+  )
+  const canUndo = computed(
+    () =>
+      historyReady.value &&
+      (room.value?.sharingEnabled
+        ? confirmedOperations.value.length > 0 || (renderedSnapshot.value?.visibleCount ?? 0) > 0
+        : undoStack.value.length > 0),
+  )
+  const canRedo = computed(
+    () =>
+      historyReady.value &&
+      (room.value?.sharingEnabled ? Boolean(sharedRedo.value) : redoStack.value.length > 0),
+  )
   // Trích các nét tạm thời của người khác để hiển thị ở lớp xem trước.
   const remotePreviews = computed(() => Object.values(previews.value).map((item) => item.operation))
   let socket: WebSocket | undefined
@@ -164,12 +197,21 @@ export const useBoardStore = defineStore('board', () => {
     redoStack.value = []
     historyActions.clear()
   }
+  // Nếu tab khác sửa một nét, chỉ bỏ nét đó khỏi lịch sử cục bộ.
+  function discardHistoryTarget(targetId: string) {
+    const target = targetId.toLowerCase()
+    undoStack.value = undoStack.value.filter((id) => id.toLowerCase() !== target)
+    redoStack.value = redoStack.value.filter((id) => id.toLowerCase() !== target)
+    for (const [id, action] of historyActions) {
+      if (action.targetId.toLowerCase() === target) historyActions.delete(id)
+    }
+  }
   // Chuyển stack sau acknowledgement hoặc room.state xác nhận UUID; ACK lặp không đổi stack lần nữa.
   function acknowledgeHistory(event: DrawingEvent) {
     const action = historyActions.get(event.id)
     if (!action) return
     historyActions.delete(event.id)
-    if (!personalOwner.value) return
+    if (!historyAllowed.value) return
     if (action.type === 'draw') {
       if (event.type !== 'visibility') {
         undoStack.value.push(action.targetId)
@@ -191,9 +233,38 @@ export const useBoardStore = defineStore('board', () => {
     source.value.pop()
     destination.value.push(action.targetId)
   }
-  // Gửi một sự kiện mới cho nét đầu stack; stack chỉ thay đổi khi server xác nhận, không phải lúc bấm nút.
-  function changeHistory(type: 'undo' | 'redo') {
+  // Dự án Chung hoàn tác nét đang hiện cuối cùng. Khi nét nằm trong ảnh, đọc vector theo yêu cầu.
+  async function changeHistory(type: 'undo' | 'redo') {
     if (type === 'undo' ? !canUndo.value : !canRedo.value) return
+    if (room.value?.sharingEnabled) {
+      let targetId = type === 'undo' ? confirmedOperations.value.at(-1)?.id : sharedRedo.value
+      if (!targetId) {
+        const current = generation
+        const roomId = room.value.id
+        readingHistory.value = true
+        try {
+          const saved = await api<{ room: Room; sequence: number; document: DrawingDocumentV2 }>(
+            `/rooms/${roomId}/render-document`,
+          )
+          if (generation !== current || room.value?.id !== roomId || !room.value.sharingEnabled)
+            return
+          if (saved.room.id !== roomId || saved.sequence !== sequence.value) {
+            error.value = 'Bản vẽ vừa thay đổi. Hãy thử hoàn tác lại.'
+            return
+          }
+          targetId = getVisibleOperations(saved.document).at(-1)?.id
+        } catch {
+          if (generation === current) error.value = 'Chưa tải được lịch sử bản vẽ. Hãy thử lại.'
+          return
+        } finally {
+          if (generation === current) readingHistory.value = false
+        }
+      }
+      if (targetId)
+        commit({ id: crypto.randomUUID(), type: 'visibility', targetId, visible: type === 'redo' })
+      return
+    }
+    // Stack Cá nhân chỉ chuyển khi máy chủ xác nhận.
     const targetId = (type === 'undo' ? undoStack.value : redoStack.value).at(-1)!
     const event: DrawingEvent = {
       id: crypto.randomUUID(),
@@ -206,11 +277,11 @@ export const useBoardStore = defineStore('board', () => {
   }
   // Hoàn tác nét đã được xác nhận gần nhất của lần mở editor này.
   function undo() {
-    changeHistory('undo')
+    void changeHistory('undo')
   }
   // Hiện lại nét vừa hoàn tác ở vị trí gốc trong lịch sử server.
   function redo() {
-    changeHistory('redo')
+    void changeHistory('redo')
   }
   // Gửi một thông điệp đúng phiên bản giao thức khi WebSocket đang mở.
   function send(type: string, data: Record<string, unknown> = {}) {
@@ -240,6 +311,7 @@ export const useBoardStore = defineStore('board', () => {
   // Đóng kết nối hiện tại, hủy bộ hẹn giờ và bỏ trạng thái hiện diện tạm thời.
   function disconnect() {
     generation++
+    readingHistory.value = false
     enhanced = false
     stopNetworkWatching?.()
     stopNetworkWatching = undefined
@@ -269,6 +341,7 @@ export const useBoardStore = defineStore('board', () => {
   // Xóa phần đang hiển thị, không xóa các phiên đã giữ để mở lại dự án sau.
   function clearActive() {
     resetHistory()
+    sharedUndo.value = false
     setSnapshot(null)
     materialized = false
     renderEpoch = undefined
@@ -385,7 +458,7 @@ export const useBoardStore = defineStore('board', () => {
     knownIds.add(operation.id)
     sequence.value = nextSequence
     if (operation.type === 'visibility') {
-      if (!pending.value[operation.id]) resetHistory()
+      if (!pending.value[operation.id]) discardHistoryTarget(operation.targetId)
       confirmedOperations.value = getVisibleOperations(document.value)
     } else {
       confirmedOperations.value.push(operation)
@@ -578,6 +651,7 @@ export const useBoardStore = defineStore('board', () => {
             }
             if (message.type === 'auth.ok') {
               enhanced = message.drawingSync === true
+              sharedUndo.value = message.sharedHistory === true
               clearTimeout(tokenTimer)
               // Làm mới token trước khi hết hạn để phiên vẽ chung tiếp tục hoạt động.
               tokenTimer = setTimeout(
@@ -636,13 +710,13 @@ export const useBoardStore = defineStore('board', () => {
               previews.value = {}
               // Nét đã có trong trạng thái server được xác nhận tại chỗ; nét còn thiếu gửi lại nguyên UUID.
               for (const operation of document.value.operations) {
-                // Tab khác đổi ẩn/hiện thì bỏ lịch sử phiên cũ; tài liệu chuẩn của server luôn được giữ.
+                // Giữ lịch sử của các nét khác khi trạng thái mới có thao tác ẩn/hiện từ xa.
                 if (
                   operation.type === 'visibility' &&
                   !previous.has(operation.id) &&
                   !pending.value[operation.id]
                 )
-                  resetHistory()
+                  discardHistoryTarget(operation.targetId)
                 acknowledgeHistory(operation)
               }
               finishJoin()
@@ -707,6 +781,14 @@ export const useBoardStore = defineStore('board', () => {
                 return
               }
               error.value = message.message
+              if (
+                message.code === 'HISTORY_CHANGED' &&
+                pending.value[message.operationId]?.type === 'visibility'
+              ) {
+                delete pending.value[message.operationId]
+                error.value = 'Nét này vừa thay đổi. Hãy thử thao tác lại.'
+                return
+              }
               // Lỗi ghi không làm mất UUID hoặc nét chờ; giữ cảnh báo qua reconnect đến xác nhận thật.
               if (
                 message.code === 'SERVICE_UNAVAILABLE' &&
@@ -721,6 +803,7 @@ export const useBoardStore = defineStore('board', () => {
                   'OPERATION_CONFLICT',
                   'DOCUMENT_FULL',
                   'OWNER_REQUIRED',
+                  'STROKE_OWNER_REQUIRED',
                   'PERSONAL_MODE_REQUIRED',
                 ].includes(message.code)
               ) {
@@ -754,14 +837,14 @@ export const useBoardStore = defineStore('board', () => {
         // Khi mất kết nối, dọn trạng thái tạm và thử nối lại theo thời gian chờ tăng dần.
         connection.onclose = (event) => {
           if (current !== generation || socket !== connection) return
-          // 4403 là thu quyền chia sẻ, 4404 là dự án bị xóa. Cả hai đều kết thúc phiên vẽ.
-          if (event.code === 4403 || event.code === 4404) {
-            closeRoomAccess(
-              roomId,
-              event.code === 4404
-                ? 'Dự án đã bị xóa.'
-                : 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.',
-            )
+          // Mất quyền, xóa hoặc chủ động thoát đều kết thúc phiên và dọn dữ liệu đã giữ.
+          const accessEnded: Record<number, string> = {
+            4403: 'Chủ dự án đã tắt chia sẻ. Hãy xin link mới nếu muốn tham gia lại.',
+            4404: 'Dự án đã bị xóa.',
+            4405: 'Bạn đã thoát dự án.',
+          }
+          if (accessEnded[event.code]) {
+            closeRoomAccess(roomId, accessEnded[event.code]!)
             return
           }
           if (event.code === 4401) {
@@ -779,18 +862,11 @@ export const useBoardStore = defineStore('board', () => {
     }
     await open()
   }
-  // Giữ UUID đến acknowledgement và chặn nét mới khi đang phục hồi lỗi ghi của các nét chờ.
+  // Giữ UUID đến acknowledgement. Chờ thao tác trước được xác nhận rồi mới đổi lịch sử.
   function commit(operation: DrawingEvent) {
     if (status.value === 'connected' && !hasSaveError.value) {
-      if (
-        operation.type === 'visibility' &&
-        (room.value?.ownerId !== accountId ||
-          room.value.sharingEnabled ||
-          pendingCount.value ||
-          rejected.value.length)
-      )
-        return false
-      if (operation.type !== 'visibility' && personalOwner.value)
+      if (operation.type === 'visibility' && !historyReady.value) return false
+      if (operation.type !== 'visibility' && historyAllowed.value && !room.value?.sharingEnabled)
         historyActions.set(operation.id, { type: 'draw', targetId: operation.id })
       pending.value[operation.id] = operation
       sendCommit(operation)
@@ -853,6 +929,7 @@ export const useBoardStore = defineStore('board', () => {
     pendingCount,
     canUndo,
     canRedo,
+    sharedUndo,
     undo,
     redo,
     rejected,

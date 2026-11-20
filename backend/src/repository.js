@@ -21,18 +21,24 @@ class PostgresRepository {
     this.pool = pool;
     this.shareToken = shareToken;
     this.performanceReady = false;
+    this.sharedUndo = true;
+    this.sharedHistory = true;
   }
   // Kiểm tra cả cột chế độ dự án để không phục vụ API với schema chưa chạy migration mới.
   async ready() { await this.pool.query("SELECT id,sharing_enabled,sharing_version FROM drawing.rooms LIMIT 0"); }
-  // Bật đường đọc hỗn hợp trước. Backend vẫn chạy được khi môi trường chưa áp dụng migration.
+  // Chọn khả năng hoàn tác theo phiên bản hàm ghi đã cài trong database.
   async enablePerformance({ packed = true } = {}) {
     const { rows: [row] } = await this.pool.query(
-      "SELECT to_regprocedure('drawing.write_operation_batch(uuid,jsonb)') IS NOT NULL AS ready",
+      `SELECT to_regprocedure('drawing.write_operation_batch(uuid,jsonb)') IS NOT NULL AS ready,
+        to_regprocedure('drawing.write_operation_batch_v2(uuid,jsonb)') IS NOT NULL AS shared_undo,
+        to_regprocedure('drawing.write_operation_batch_v3(uuid,jsonb)') IS NOT NULL AS shared_history`,
     );
-    this.performanceReady = row.ready;
+    this.performanceReady = row.ready || row.shared_undo || row.shared_history;
+    this.sharedHistory = !this.performanceReady || row.shared_history;
+    this.sharedUndo = this.sharedHistory || row.shared_undo;
     this.packedWrites = packed;
-    if (row.ready) this.sync = new PerformanceSync(this, metadata);
-    return row.ready;
+    if (this.performanceReady) this.sync = new PerformanceSync(this, metadata);
+    return this.performanceReady;
   }
   // Chạy nhiều câu truy vấn trong một giao dịch; lỗi thì hoàn tác toàn bộ.
   async transaction(action) {
@@ -162,6 +168,14 @@ class PostgresRepository {
       await client.query("DELETE FROM drawing.rooms WHERE id=$1", [room.id]);
     });
   }
+  // Thành viên chỉ tự xóa tư cách tham gia của mình, theo cùng khóa với các lượt ghi dự án.
+  async leaveRoom(userId, roomId) {
+    await this.transaction(async (client) => {
+      const room = await this.member(client, userId, roomId);
+      if (room.owner_id === userId) throw new AppError(403, "OWNER_CANNOT_LEAVE", "The project owner cannot leave their own project.");
+      await client.query("DELETE FROM drawing.room_members WHERE room_id=$1 AND user_id=$2", [room.id, userId]);
+    });
+  }
   // Lấy lại nguyên link HMAC; chỉ dự án version 0 còn dùng hành vi phát link ngẫu nhiên của endpoint cũ.
   async invitation(userId, roomId) {
     return this.transaction(async (client) => {
@@ -208,7 +222,6 @@ class PostgresRepository {
     eventSchema(operation);
     return this.transaction(async (client) => {
       const room = await this.member(client, userId, roomId);
-      if (operation.type === "visibility") this.owner(room, userId);
       const { rows: [existing] } = await client.query("SELECT sequence,payload,author_id FROM drawing.room_operations WHERE room_id=$1 AND operation_id=$2", [roomId, operation.id]);
       if (existing) {
         if (existing.author_id !== userId || JSON.stringify(existing.payload) !== JSON.stringify(operation)) {
@@ -218,10 +231,17 @@ class PostgresRepository {
         }
         return { sequence: existing.sequence, operation: existing.payload, duplicate: true };
       }
-      // Chủ vẫn được nhận lại xác nhận của sự kiện đã lưu sau khi bật chia sẻ; chỉ chặn sự kiện mới ở chế độ Chung.
-      if (operation.type === "visibility" && room.sharing_enabled) throw new AppError(409, "PERSONAL_MODE_REQUIRED", "Switch to personal mode before undoing or redoing a stroke.");
       if (room.initial_document.operations.some((item) => item.id.toLowerCase() === operation.id.toLowerCase())) throw new AppError(409, "OPERATION_CONFLICT", "An operation with that ID already exists.");
       const document = await this.document(client, room);
+      // Kiểm tra trạng thái hiện tại dưới cùng khóa ghi, để hai lượt Undo trùng đích chỉ có một hiệu lực.
+      if (operation.type === "visibility" && room.sharing_enabled) {
+        const targetId = operation.targetId.toLowerCase();
+        const target = document.operations.find((item) => item.id.toLowerCase() === targetId);
+        if (!target || target.type === "visibility") throw commitError("INVALID_INPUT");
+        const last = document.operations.findLast((item) =>
+          item.type === "visibility" && item.targetId.toLowerCase() === targetId);
+        if ((last?.visible ?? true) === operation.visible) throw commitError("HISTORY_CHANGED");
+      }
       document.operations.push(operation);
       if (operation.type === "visibility") document.version = 2;
       if (document.version === 2) normalizeDocument(document);
@@ -251,9 +271,11 @@ class PostgresRepository {
         target: operation.type === "visibility" ? operation.targetId : undefined };
     });
     let result;
+    const writer = this.sharedHistory ? "write_operation_batch_v3"
+      : this.sharedUndo ? "write_operation_batch_v2" : "write_operation_batch";
     for (let attempt = 0; attempt < 3; attempt++) {
       const { rows } = await this.pool.query(
-        "SELECT drawing.write_operation_batch($1,$2::jsonb) AS result", [roomId, JSON.stringify(jobs)],
+        `SELECT drawing.${writer}($1,$2::jsonb) AS result`, [roomId, JSON.stringify(jobs)],
       );
       result = rows[0].result;
       if (!result.stale) break;
@@ -320,6 +342,8 @@ function commitError(code) {
   const errors = {
     ROOM_NOT_FOUND: [404, "Room not found or access denied."],
     OWNER_REQUIRED: [403, "Only the room owner can do that."],
+    STROKE_OWNER_REQUIRED: [403, "You can only undo or redo your own strokes."],
+    HISTORY_CHANGED: [409, "The stroke visibility has already changed."],
     OPERATION_CONFLICT: [409, "An operation with that ID already exists."],
     PERSONAL_MODE_REQUIRED: [409, "Switch to personal mode before undoing or redoing a stroke."],
     DOCUMENT_FULL: [413, "This board reached its 5 MiB limit. Start a new room."],

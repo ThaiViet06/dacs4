@@ -51,8 +51,8 @@ function roomCreated(room: Room) {
 }
 
 // Bỏ dữ liệu đã mở và thẻ trong cache sau khi xác nhận quyền của tài khoản hiện tại.
-function roomRemoved(room: Room, message: string) {
-  if (!isSignedIn.value || user.value?.id !== room.ownerId) return
+function roomRemoved(room: Room, message: string, accountId: string) {
+  if (!isSignedIn.value || user.value?.id !== accountId) return
   board.forgetRoom(room.id)
   projects.removeRoom(room.id, message)
 }
@@ -140,11 +140,13 @@ function roomRemoved(room: Room, message: string) {
           </div>
         </RouterLink>
         <ProjectCardActions
-          v-if="isSignedIn && room.ownerId === user?.id"
+          v-if="isSignedIn && user"
+          :key="user.id"
           :room="room"
+          :user-id="user.id"
           @renamed="projects.updateRenamedRoom"
           @sharing-changed="projects.updateSharedRoom"
-          @removed="roomRemoved(room, $event)"
+          @removed="(message, accountId) => roomRemoved(room, message, accountId)"
         />
       </li>
     </ul>

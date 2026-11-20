@@ -4,16 +4,16 @@ import RenameProjectForm from './RenameProjectForm.vue'
 import RoomInvitation from './RoomInvitation.vue'
 import type { Room } from '../drawing/model'
 import { ApiError } from '../services/api'
-import { deleteRoom } from '../services/rooms'
+import { deleteRoom, leaveRoom } from '../services/rooms'
 import { useBoardStore } from '../stores/board'
 
-const props = defineProps<{ room: Room }>()
+const props = defineProps<{ room: Room; userId: string }>()
 const emit = defineEmits<{
   renamed: [room: Room]
   'sharing-changed': [room: Room]
-  removed: [message: string]
+  removed: [message: string, accountId: string]
 }>()
-type Action = 'rename' | 'sharing' | 'delete'
+type Action = 'rename' | 'sharing' | 'delete' | 'leave'
 const board = useBoardStore()
 const menuId = useId()
 const menuOpen = ref(false)
@@ -23,6 +23,8 @@ const dialog = ref<HTMLDialogElement | null>(null)
 const renameForm = ref<InstanceType<typeof RenameProjectForm> | null>(null)
 const busy = ref(false)
 const error = ref('')
+const isOwner = computed(() => props.room.ownerId === props.userId)
+const removalLabel = computed(() => (action.value === 'leave' ? 'Thoát dự án' : 'Xóa dự án'))
 const sharingBlocked = computed(() => board.hasUnsavedChanges(props.room.id))
 let active = true
 
@@ -64,25 +66,28 @@ function closeDialog() {
   action.value = null
 }
 
-// Giữ thẻ đến khi nhận xác nhận xóa hoặc API xác nhận dự án không còn truy cập được.
-async function confirmDelete() {
-  if (action.value !== 'delete' || busy.value) return
+// Chỉ gỡ thẻ sau khi máy chủ xác nhận xóa, thoát hoặc xác nhận quyền đã mất.
+async function confirmRemoval() {
+  const leaving = action.value === 'leave'
+  if ((!leaving && action.value !== 'delete') || busy.value) return
   const id = props.room.id
+  const accountId = props.userId
+  const verb = leaving ? 'thoát' : 'xóa'
   busy.value = true
   error.value = ''
   try {
-    await deleteRoom(id)
-    if (active) emit('removed', 'Đã xóa dự án.')
+    await (leaving ? leaveRoom(id) : deleteRoom(id))
+    if (active) emit('removed', `Đã ${verb} dự án.`, accountId)
   } catch (cause) {
     if (!active) return
     if (cause instanceof ApiError && cause.status === 404 && cause.code === 'ROOM_NOT_FOUND') {
-      emit('removed', 'Dự án không còn trong danh sách của bạn.')
+      emit('removed', 'Dự án không còn trong danh sách của bạn.', accountId)
     } else if (cause instanceof ApiError && cause.code === 'OWNER_REQUIRED') {
       error.value = 'Chỉ chủ dự án mới có thể xóa.'
     } else if (!(cause instanceof ApiError) || cause.status === 401) {
-      error.value = 'Phiên đăng nhập không hợp lệ. Đăng nhập lại rồi thử xóa.'
+      error.value = `Phiên đăng nhập không hợp lệ. Đăng nhập lại rồi thử ${verb} dự án.`
     } else {
-      error.value = 'Chưa xác nhận được việc xóa. Kiểm tra kết nối rồi thử lại.'
+      error.value = `Chưa xác nhận được việc ${verb} dự án. Kiểm tra kết nối rồi thử lại.`
     }
   } finally {
     if (active) busy.value = false
@@ -110,17 +115,28 @@ onBeforeUnmount(() => {
       <span aria-hidden="true">⋮</span>
     </button>
     <div v-show="menuOpen" :id="menuId" class="project-actions-menu">
-      <button type="button" aria-haspopup="dialog" @click="openAction('rename')">Đổi tên</button>
-      <button type="button" aria-haspopup="dialog" @click="openAction('sharing')">
-        Đổi chế độ chia sẻ
-      </button>
+      <template v-if="isOwner">
+        <button type="button" aria-haspopup="dialog" @click="openAction('rename')">Đổi tên</button>
+        <button type="button" aria-haspopup="dialog" @click="openAction('sharing')">
+          Đổi chế độ chia sẻ
+        </button>
+        <button
+          class="project-action-danger"
+          type="button"
+          aria-haspopup="dialog"
+          @click="openAction('delete')"
+        >
+          Xóa dự án
+        </button>
+      </template>
       <button
+        v-else
         class="project-action-danger"
         type="button"
         aria-haspopup="dialog"
-        @click="openAction('delete')"
+        @click="openAction('leave')"
       >
-        Xóa dự án
+        Thoát dự án
       </button>
     </div>
   </div>
@@ -141,7 +157,7 @@ onBeforeUnmount(() => {
   >
     <div class="studio-reset-dialog-content">
       <h2 :id="`${menuId}-heading`">
-        {{ action === 'sharing' ? 'Đổi chế độ chia sẻ' : 'Xóa dự án?' }}
+        {{ action === 'sharing' ? 'Đổi chế độ chia sẻ' : `${removalLabel}?` }}
       </h2>
       <RoomInvitation
         v-if="action === 'sharing'"
@@ -152,7 +168,11 @@ onBeforeUnmount(() => {
         @changed="emit('sharing-changed', $event)"
       />
       <template v-else>
-        <p>
+        <p v-if="action === 'leave'">
+          <strong>“{{ room.title }}”</strong> sẽ được gỡ khỏi Studio của bạn. Bạn có thể tham gia
+          lại bằng link mời còn hiệu lực.
+        </p>
+        <p v-else>
           Xóa vĩnh viễn <strong>“{{ room.title }}”</strong>, gồm bản vẽ và lịch sử trò chuyện.
         </p>
         <p v-if="error" class="project-action-danger" role="alert">{{ error }}</p>
@@ -162,13 +182,13 @@ onBeforeUnmount(() => {
           {{ action === 'sharing' ? 'Đóng' : 'Hủy' }}
         </button>
         <button
-          v-if="action === 'delete'"
+          v-if="action === 'delete' || action === 'leave'"
           class="button project-delete-button"
           type="button"
           :disabled="busy"
-          @click="confirmDelete"
+          @click="confirmRemoval"
         >
-          {{ busy ? 'Đang xóa…' : 'Xóa dự án' }}
+          {{ busy ? 'Đang xử lý…' : removalLabel }}
         </button>
       </div>
     </div>

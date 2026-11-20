@@ -3,6 +3,7 @@ const { randomBytes, randomUUID, createHash } = require("node:crypto");
 const { once } = require("node:events");
 const { test } = require("node:test");
 const { WebSocket } = require("ws");
+const { createChatProfileLookup } = require("../src/auth");
 const { ChatService, createChatCipher, validateChatKey } = require("../src/chat");
 const { PostgresRepository } = require("../src/repository");
 const { createApplication } = require("../src/application");
@@ -12,7 +13,7 @@ const { emptyDocument } = require("../src/protocol");
 const origin = "http://localhost:5173";
 
 // SQL giả giữ bản mã sau COMMIT; chạy service/repository, HTTP và ws thật mà không dùng tài khoản ngoài.
-async function setup(context, { configured = true } = {}) {
+async function setup(context, { configured = true, lookupProfiles } = {}) {
   const roomId = randomUUID();
   const otherRoomId = randomUUID();
   const key = randomBytes(32).toString("hex");
@@ -28,8 +29,16 @@ async function setup(context, { configured = true } = {}) {
   const control = { failCommit: false, gate: null };
   const identities = new Map();
   const pool = {
-    // Readiness không ghi dữ liệu; các truy vấn nghiệp vụ phải nằm trong transaction riêng.
-    async query(sql) {
+    // Đọc hồ sơ theo quyền dự án và tác giả gần nhất, tách khỏi transaction gửi tin.
+    async query(sql, values = []) {
+      if (sql.startsWith("SELECT r.sharing_enabled, ARRAY")) {
+        const [id, user] = values;
+        const project = stored.rooms.get(id);
+        if (!project || !stored.members.get(id)?.has(user) || (!project.sharing_enabled && project.owner_id !== user))
+          return { rows: [] };
+        const authors = stored.messages.filter((message) => message.room_id === id).slice(-50).map((message) => message.author_id);
+        return { rows: [{ sharing_enabled: project.sharing_enabled, authors: [...new Set(authors)] }] };
+      }
       assert.match(sql, /^SELECT id/);
       return { rows: [] };
     },
@@ -78,7 +87,7 @@ async function setup(context, { configured = true } = {}) {
     },
   };
   const repository = new PostgresRepository(pool, { shareToken });
-  const chat = new ChatService(repository, configured ? createChatCipher(key) : undefined);
+  const chat = new ChatService(repository, configured ? createChatCipher(key) : undefined, lookupProfiles);
   const application = createApplication({ repository, chat, origins: [origin],
     // Danh tính giả chỉ dùng trong test; không đọc token hay khóa Clerk thật.
     verifyToken: async (token) => {
@@ -139,6 +148,42 @@ async function setup(context, { configured = true } = {}) {
   }
   return { roomId, otherRoomId, chat, repository, key, control, identities, base, request, join, pauseCommit, stored: () => stored };
 }
+
+test("chat profiles expose display fields only to shared project members and cache Clerk lookups", async (context) => {
+  const batches = [];
+  const lookupProfiles = createChatProfileLookup({}, { users: {
+    // Trả cả hồ sơ ngoài dự án và email để kiểm tra lọc dữ liệu trước khi trả HTTP.
+    async getUserList(query) {
+      batches.push(query);
+      return { data: [
+        { id: "owner", fullName: null, username: "chu-du-an", hasImage: false },
+        { id: "member", fullName: "Mai Nguyễn", hasImage: true, imageUrl: "https://img.clerk.com/avatar",
+          emailAddresses: [{ emailAddress: "private@example.invalid" }] },
+        { id: "other-owner", fullName: "Outside the project" },
+      ] };
+    },
+  } });
+  const fixture = await setup(context, { lookupProfiles });
+  await fixture.chat.send("member", fixture.roomId, { id: randomUUID(), text: "Xin chào" });
+  await fixture.chat.send("other-owner", fixture.otherRoomId, { id: randomUUID(), text: "Another room" });
+  const path = "messages/profiles";
+  assert.equal((await fixture.request(undefined, fixture.roomId, undefined, path)).status, 401);
+  assert.equal((await fixture.request("outsider", fixture.roomId, undefined, path)).status, 404);
+  assert.equal(batches.length, 0);
+  const result = await fixture.request("owner", fixture.roomId, undefined, path + "?userId=other-owner");
+  assert.equal(result.status, 200);
+  assert.deepEqual(await result.json(), { profiles: [
+    { userId: "owner", name: "chu-du-an", avatarUrl: null },
+    { userId: "member", name: "Mai Nguyễn", avatarUrl: "https://img.clerk.com/avatar" },
+  ] });
+  assert.equal((await fixture.request("member", fixture.roomId, undefined, path)).status, 200);
+  assert.deepEqual(batches, [{ userId: ["owner", "member"], limit: 2 }]);
+
+  assert.equal((await fixture.request("owner", fixture.roomId, { enabled: false }, "sharing")).status, 200);
+  assert.equal((await fixture.request("owner", fixture.roomId, undefined, path)).status, 409);
+  assert.equal((await fixture.request("member", fixture.roomId, undefined, path)).status, 404);
+  assert.equal(batches.length, 1);
+});
 
 test("AES-GCM uses fresh IVs, restores Unicode and authenticates both contents and record identity", () => {
   const key = randomBytes(32).toString("hex");

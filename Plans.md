@@ -1,8 +1,8 @@
 # Multi-User Online Drawing Application — Kế hoạch Studio dự án
 
-Cập nhật: **18/11/2026**. Demo cho **2–10 người**, làm local trước Docker/deploy và **mỗi lần một bước nhỏ**. `[x]` là phần đã kiểm chứng trong phạm vi ghi rõ; `[ ]` là phần chưa hoàn thành.
+Cập nhật: **20/11/2026**. Demo cho **2–10 người**, làm local trước Docker/deploy và **mỗi lần một bước nhỏ**. `[x]` là phần đã kiểm chứng trong phạm vi ghi rõ; `[ ]` là phần chưa hoàn thành.
 
-**Hiện trạng:** Studio đã có menu quản lý, vẽ cộng tác và chat mã hóa. Migration 004 tối ưu đã áp dụng trên Supabase. Frontend 165 test và build/type-check đạt, backend 145 test và 1 ca Supabase tích hợp đạt.
+**Hiện trạng:** Studio đã có menu quản lý, quyền tự thoát dự án, vẽ cộng tác, lịch sử dùng chung và chat mã hóa. Migration 006 đã áp dụng trên Supabase. Frontend 169 test và build/type-check đạt, backend 147 test và một ca tích hợp Supabase đạt.
 
 ## 1. Luồng sản phẩm đã chốt
 
@@ -19,7 +19,7 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 - Khách chưa đăng nhập vẫn được Vẽ thử bằng bản nháp local hiện có; dự án tự lưu yêu cầu đăng nhập.
 - “Tạo trang giấy mới” trong editor dự án thành “Tạo dự án mới”, giữ lại dự án trước đó.
 
-**Hoãn:** bản sao riêng, thumbnail, thư mục, layer, khách ẩn danh, quyền chỉ xem và undo/redo chung. Chat chưa cần tệp đính kèm, sửa/xóa tin, thông báo hoặc mã hóa đầu cuối.
+**Hoãn:** bản sao riêng, thumbnail, thư mục, layer, khách ẩn danh và quyền chỉ xem. Chat chưa cần tệp đính kèm, sửa/xóa tin, thông báo hoặc mã hóa đầu cuối.
 
 ## 2. Nguyên tắc triển khai
 
@@ -73,6 +73,7 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 - [x] Lưới thẻ responsive có tên/chế độ/vai trò; bấm cả thẻ để mở. Thẻ “+” mở dialog tên, Hủy/Esc và chặn gửi trùng; Chrome với SDK/API giả đã kiểm tra tạo/lỗi/đăng xuất và 390px.
 - [x] Hai mục Cá nhân/Chung lọc metadata đã tải, có ngày cập nhật và thông báo mục trống. Tải lại giữ mục đã chọn, đổi tài khoản reset bộ lọc; kiểm tra Chrome bằng dữ liệu giả đạt.
 - [x] Menu ⋮ cho chủ trên thẻ dự án. Đổi tên, đổi Cá nhân/Cùng chỉnh sửa và lấy link ngay ở Studio. Xóa cần xác nhận, dọn nét vẽ/thành viên/chat sau COMMIT và đưa các tab đang mở về Studio. Chrome ở 390 px và desktop, backend với SQL giả, Supabase thật với danh tính test đã kiểm tra. Dữ liệu thử đã dọn.
+- [x] Menu ⋮ của thành viên chỉ có Thoát dự án, có hộp xác nhận. API gỡ tư cách thành viên sau COMMIT rồi đóng các tab của tài khoản đó. Chrome giả lập kiểm tra hủy, retry và tải lại. Ca Supabase xác nhận thành viên có thể dùng link mời để tham gia lại.
 - [x] Cache card/bộ lọc theo tài khoản, cập nhật ngầm và bỏ phản hồi cũ. Đổi tên/chế độ cập nhật card; thu quyền loại card ngay. 10 test store và Chrome giả đạt; F5 tải lại danh sách.
 - [x] Cache editor theo dự án/tài khoản: khóa vẽ đến khi quyền/room.state hợp lệ, giữ nét chờ/rejected và link phiên. Rời trang đóng socket; mở lại đối chiếu/retry UUID cũ. Giữ tối đa năm phiên hoàn tất, không loại phiên có nét chưa lưu. Người dùng xác nhận dự án → Trang chủ → mở lại giữ nét và vẽ tiếp được; mất ACK/link/quyền kiểm chứng bằng test/Chrome giả. F5/đóng tab xóa RAM, chỉ nét đã xác nhận lưu bền.
 - [x] Tạo dự án Cá nhân thành công thì mở `/studio/:id`. Ngày 04/11/2026, người dùng xác nhận đúng editor/tên, vẽ và F5 giữ nét bằng tài khoản thật. Chrome với dịch vụ giả đã kiểm tra chờ/lỗi, gửi trùng và phản hồi sau đăng xuất/rời trang.
@@ -106,11 +107,19 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 - [x] Migration `003_room_messages.sql` đã áp dụng trên Supabase, checksum khớp; bảng riêng có RLS, không cấp SELECT cho anon/authenticated. Khóa local nằm trong file Git ignore; backend tạm kiểm tra readiness/HTTP 200, chat chưa đăng nhập trả 401.
 - [x] GET/POST `/api/rooms/:id/messages` kiểm tra thành viên và chế độ Chung. Thứ tự chat riêng, retry UUID không trùng; chỉ báo tin qua WebSocket sau COMMIT, xếp cùng hàng đợi với thu quyền.
 - [x] Khung chat chỉ hiện khi Chung: Enter gửi, Shift+Enter xuống dòng, hỗ trợ bộ gõ; khóa gửi khi mất mạng, nối lại ghép lịch sử. Đổi tài khoản/dự án bỏ phản hồi cũ, lỗi chat không khóa vẽ.
+- [x] Hiện tên Clerk, giờ gửi, ảnh đại diện hoặc biểu tượng thay thế. API hồ sơ yêu cầu quyền dự án Chung và chạy riêng với luồng gửi. Chrome desktop và 390 px đã kiểm tra tên, giờ, ảnh dự phòng, nhận trực tiếp và F5 bằng tài khoản giả lập.
+- [x] Thanh công cụ nằm trên Canvas và chat. Từ 900 px, chat nằm bên phải, cao bằng khung Canvas và cuộn lịch sử bên trong. Màn hẹp xếp dọc. Đã kiểm tra bố cục, chọn công cụ và đồng bộ nét/chat trên Chrome với tài khoản giả lập.
 - [x] 11 test backend và 14 test frontend mới đạt: mã hóa/giải mã, sai khóa/sửa bản mã, quyền, cách ly dự án, rollback, UUID, reconnect và mất phản hồi. Tổng 140 backend/161 frontend, build/type-check/lint đạt.
 - [x] Ngày 17/11, người dùng xác nhận sau restart: hai tài khoản gửi/nhận tiếng Việt trực tiếp và F5 giữ đủ lịch sử. SQL chỉ đọc đối chiếu 2 tin/1 dự án/2 tác giả; cả 2 bản mã xác thực và giải mã đúng bằng khóa backend.
 - [x] Đóng chat/thu quyền (`hi`, 17/11): người dùng xác nhận chat ẩn, thành viên về Studio và URL cũ bị chặn; sau đó đã bật lại Chung. SQL được đọc sau khi bật lại: Chung/2 thành viên, hash hai tin mã hóa không đổi. Quyền GET/POST ở Cá nhân đã có test SQL giả.
 
 **Đạt khi:** hai thành viên trò chuyện và F5 còn lịch sử; database chỉ có bản mã nội dung, quyền chia sẻ áp dụng cho cả vẽ và chat. Giữ khóa ổn định qua restart/deploy; HTTPS/WSS được cấu hình lúc triển khai.
+
+### Pha 6.2 — Hoàn tác dùng chung
+
+- [x] Mọi thành viên dự án Chung có thể hoàn tác nét đang hiện gần nhất, kể cả nét của người khác. Sự kiện ẩn/hiện đồng bộ sau ACK. Nét mới kết thúc nhánh Làm lại.
+- [x] Migration 006 kiểm tra quyền dự án và trạng thái đích dưới cùng khóa ghi. Hai lượt hoàn tác cùng một nét chỉ ghi một sự kiện. WebSocket báo khả năng `sharedHistory`.
+- [x] Hai cửa sổ Chrome giả lập đã kiểm tra chủ và thành viên hoàn tác nét của nhau, làm lại và F5. Ca Supabase xác nhận quyền, sequence và retry UUID. Test store kiểm tra chọn nét nằm trong snapshot.
 
 ### Tối ưu độ trễ trước Docker
 
@@ -157,13 +166,13 @@ Luồng chính: **Studio → Tạo/mở dự án → Vẽ tự lưu → Chia s�
 
 ### Pha 9 — Kiểm thử hồi quy
 
-**Nền tảng:** frontend 165 test và backend 145 test đạt. Ca Supabase chạy riêng qua `npm run test:database`, dùng xác thực giả lập. Kết quả menu thẻ, chat, tải 10 kết nối và độ trễ local đã ghi ở các mục liên quan. Phiên Clerk tự hết hạn cần nghiệm thu riêng.
+**Nền tảng:** frontend 169 test và backend 147 test đạt. Ca Supabase chạy riêng qua `npm run test:database`, dùng xác thực giả lập. Kết quả menu thẻ, chat, tải 10 kết nối và độ trễ local đã ghi ở các mục liên quan. Phiên Clerk tự hết hạn cần nghiệm thu riêng.
 
 - [x] Người dùng nghiệm thu đổi tên bằng tài khoản thật: editor → Về Studio → mở lại/F5 giữ đúng tên và nét.
 - [x] Người dùng nghiệm thu cập nhật link cũ: hủy rồi xác nhận, F5 giữ link mới/bản vẽ; thành viên đang mở vẫn vẽ được mà không tham gia lại.
 - [x] Ngày 16/11, người dùng xác nhận link hợp lệ ở cả hai trường hợp đã/chưa đăng nhập: tự vào đúng Canvas sau xác thực, không cần bấm tham gia và vẽ đồng bộ giữa hai tài khoản.
-- [x] Quyền giao diện (code/test): render template StudioEditor thật với component con giả cho thành viên, chủ Chung và chủ Cá nhân. Thành viên không có nút đổi tên/chia sẻ/undo/redo, Canvas vẫn mở vẽ; phím Ctrl+Z/Y/Shift+Z không đổi nét hoặc lịch sử nháp. Toàn bộ backend kiểm tra lại đạt, gồm quyền HTTP/WebSocket.
-- [x] Ngày 17/11, người dùng xác nhận hai tài khoản thật: thành viên không có Đổi tên/Chia sẻ/Hoàn tác/Làm lại; Ctrl+Z/Y/Shift+Z giữ nguyên hình. Nét thành viên đồng bộ sang chủ, F5 cả hai giữ hình và vẽ tiếp được.
+- [x] Quyền giao diện (code/test): thành viên không có nút đổi tên/chia sẻ. Thành viên dùng lịch sử Chung khi backend báo hỗ trợ.
+- [x] Ngày 17/11, hai tài khoản thật xác nhận thành viên không có Đổi tên/Chia sẻ, nét đồng bộ sang chủ và F5 giữ hình. Lịch sử dùng chung được kiểm tra ở Pha 6.2.
 - [x] Hai nhóm (code/test): Pinia/template RoomList thật kiểm tra card Cá nhân ↔ Chung, loại card thành viên sau cập nhật danh sách, bỏ phản hồi cũ và cách ly tài khoản. API xác nhận `ROOM_NOT_FOUND` khi mở card cũ sẽ loại card khỏi cache Studio; HTML/404 không đủ để loại card. 3 test frontend mới và toàn bộ backend đạt; test chuyển chế độ/thu quyền đã có.
 - [x] Ngày 17/11, người dùng xác nhận hai tài khoản thật: card chủ chuyển Cá nhân → Chung → Cá nhân; thành viên thấy card khi được mời, mở card cũ sau thu quyền bị chặn và Tải lại/F5 không còn card.
 - [x] Ngày 16/11, restart backend thật và đối chiếu Supabase chỉ đọc đạt; người dùng xác nhận link giữ nguyên, bản vẽ đúng và hai tài khoản vẫn vẽ đồng bộ.

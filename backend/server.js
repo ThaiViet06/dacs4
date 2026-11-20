@@ -1,6 +1,6 @@
 const { Pool } = require("pg");
 const { readConfig } = require("./src/config");
-const { createTokenVerifier } = require("./src/auth");
+const { createTokenVerifier, createChatProfileLookup } = require("./src/auth");
 const { PostgresRepository } = require("./src/repository");
 const { createApplication } = require("./src/application");
 const { createShareTokenGenerator } = require("./src/sharing");
@@ -19,7 +19,11 @@ async function main() {
   const shareToken = config.shareLinkSecret ? createShareTokenGenerator(config.shareLinkSecret) : undefined;
   const repository = new PostgresRepository(pool, { shareToken });
   // Chat dùng khóa riêng; kiểm tra migration trước khi phục vụ nếu đã bật tính năng.
-  const chat = new ChatService(repository, config.chatEncryptionKey ? createChatCipher(config.chatEncryptionKey) : undefined);
+  const chat = new ChatService(
+    repository,
+    config.chatEncryptionKey ? createChatCipher(config.chatEncryptionKey) : undefined,
+    config.chatEncryptionKey ? createChatProfileLookup(config) : undefined,
+  );
   try {
     await repository.ready();
     await chat.ready();

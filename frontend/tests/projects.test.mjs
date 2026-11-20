@@ -323,7 +323,7 @@ test('rendered member cards disappear after permission refresh and stay isolated
   const member = await renderRoomList(session, 'user-b')
   assert.deepEqual(member.ids, ['invited-project'])
   assert.match(member.html, /Thành viên/)
-  assert.doesNotMatch(member.html, /data-actions-for=/)
+  assert.match(member.html, /data-actions-for="invited-project"/)
   projects.activeGroup = 'personal'
   assert.deepEqual((await renderRoomList(session, 'user-b')).ids, ['member-personal'])
   projects.activeGroup = 'shared'

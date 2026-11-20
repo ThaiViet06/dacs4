@@ -110,6 +110,13 @@ class MemoryRepository {
     this.#rooms.delete(roomId);
   }
 
+  // Bỏ đúng thành viên đang yêu cầu thoát, theo cùng quy tắc quyền với PostgreSQL.
+  async leaveRoom(userId, roomId) {
+    const room = await this.getRoom(userId, roomId);
+    if (room.ownerId === userId) throw new AppError(403, "OWNER_CANNOT_LEAVE", "The project owner cannot leave their own project.");
+    this.#rooms.get(roomId).members.delete(userId);
+  }
+
   // Trả object mới chỉ có metadata công khai; không lộ token/hash, tài liệu hoặc tập thành viên nội bộ.
   #metadata(room) {
     return {

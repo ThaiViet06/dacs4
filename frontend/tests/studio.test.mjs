@@ -113,6 +113,7 @@ function setup(context, project = false, isOwner = true, sharingEnabled = true) 
     },
     canUndo: true,
     canRedo: true,
+    sharedUndo: true,
     undo() {
       calls.projectUndo++
     },
@@ -229,10 +230,10 @@ test('project templates render management and history controls only for the allo
     assert.equal(html.includes('data-project-rename'), owner)
     assert.equal(html.includes('data-project-chat'), shared)
     assert.equal(/<button\b[^>]*>\s*Chia sẻ\s*<\/button>/.test(html), owner)
-    assert.equal(html.includes('aria-keyshortcuts="Control+Z Meta+Z"'), owner && !shared)
+    assert.equal(html.includes('aria-keyshortcuts="Control+Z Meta+Z"'), owner || shared)
     assert.equal(
       html.includes('aria-keyshortcuts="Control+Y Control+Shift+Z Meta+Shift+Z"'),
-      owner && !shared,
+      owner || shared,
     )
     assert.ok(
       html.includes('data-drawing-enabled="true"'),
@@ -334,12 +335,13 @@ test('local keyboard listener handles undo and both redo shortcuts', (context) =
   assert.equal(calls.undo, 2)
 })
 
-// Dự án Chung chỉ báo giới hạn, không được gọi lịch sử local hoặc lịch sử dự án.
-test('shared projects explain history restrictions without changing strokes', async (context) => {
+// Backend cũ chưa quảng bá khả năng hoàn tác cho dự án Chung.
+test('shared projects explain why undo is unavailable when the server lacks support', async (context) => {
   const { state, board, calls } = setup(context, true)
+  board.sharedUndo = false
   state.handleToolShortcut({ key: 'z', ctrlKey: true, target: null, preventDefault() {} })
   await nextTick()
-  assert.match(state.actionFeedback.value, /chủ dự án.*Cá nhân/)
+  assert.match(state.actionFeedback.value, /chưa hỗ trợ.*dự án Chung/)
   assert.equal(board.document.operations.length, 1)
   assert.equal(calls.undo, 0)
   assert.equal(calls.redo, 0)
@@ -370,8 +372,8 @@ test('personal project buttons and keyboard shortcuts use board history and neve
   assert.match(state.actionFeedback.value, /Đang gửi yêu cầu làm lại/)
 })
 
-// Nút và phím tắt cùng phải giữ nguyên nét cho thành viên/chủ đang cộng tác, không chạm lịch sử bản nháp.
-test('project history controls stay unavailable to members and shared owners', (context) => {
+// Dự án Cá nhân vẫn khóa lịch sử với người ngoài. Dự án Chung dùng lịch sử tài khoản.
+test('members and owners use project history in shared mode only when allowed', (context) => {
   for (const [owner, shared] of [
     [false, false],
     [false, true],
@@ -379,7 +381,7 @@ test('project history controls stay unavailable to members and shared owners', (
   ]) {
     const { state, board, calls, listeners } = setup(context, true, owner, shared)
     const document = JSON.stringify(board.document)
-    assert.equal(Boolean(state.historyAvailable.value), false)
+    assert.equal(Boolean(state.historyAvailable.value), shared)
     state.undoStroke()
     state.redoStroke()
     const [keydown] = listeners
@@ -389,8 +391,8 @@ test('project history controls stay unavailable to members and shared owners', (
       { key: 'Z', ctrlKey: true, shiftKey: true },
     ])
       keydown({ ...options, target: null, preventDefault() {} })
-    assert.equal(calls.projectUndo, 0)
-    assert.equal(calls.projectRedo, 0)
+    assert.equal(calls.projectUndo, shared ? 2 : 0)
+    assert.equal(calls.projectRedo, shared ? 3 : 0)
     assert.equal(calls.undo, 0)
     assert.equal(calls.redo, 0)
     assert.equal(JSON.stringify(board.document), document)

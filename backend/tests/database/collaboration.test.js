@@ -12,7 +12,7 @@ const { packStroke, unpackWire } = require("../../src/stroke-codec");
 const { renderSnapshot } = require("../../src/snapshot-worker");
 
 // Ca opt-in dùng PostgreSQL thật và danh tính giả chỉ trên server test cổng tạm.
-test("PostgreSQL preserves private undo through sharing, member commits, restart and UUID retries", { timeout: 120000 }, async (context) => {
+test("PostgreSQL preserves private and shared undo across access changes, restart and UUID retries", { timeout: 120000 }, async (context) => {
   const database = { ...readConfig().database, max: 2 };
   const caseId = randomUUID();
   const title = `[autotest] undo-sharing-${caseId}`;
@@ -119,7 +119,7 @@ test("PostgreSQL preserves private undo through sharing, member commits, restart
           finish(message) {
             clearTimeout(timer);
             waiting.delete(waiter);
-            if (message.type === "error") reject(new Error("Test WebSocket error: " + message.code));
+            if (message.type === "error" && type !== "error") reject(new Error("Test WebSocket error: " + message.code));
             else resolve(message);
           },
         };
@@ -284,7 +284,7 @@ test("PostgreSQL preserves private undo through sharing, member commits, restart
       { id: retryStroke.id, author: ownerId, payload: retryStroke, bytes: Buffer.byteLength(JSON.stringify(retryStroke)) },
       { id: invalid.id, author: ownerId, packed: "AA==", bytes: Buffer.byteLength(JSON.stringify(invalid)) },
     ];
-    await assert.rejects(pool.query("SELECT drawing.write_operation_batch($1,$2::jsonb)", [roomId, JSON.stringify(brokenBatch)]), {
+    await assert.rejects(pool.query("SELECT drawing.write_operation_batch_v3($1,$2::jsonb)", [roomId, JSON.stringify(brokenBatch)]), {
       code: "23514",
     });
     const unchanged = await repository.state(ownerId, roomId);
@@ -293,6 +293,50 @@ test("PostgreSQL preserves private undo through sharing, member commits, restart
     finalVector.send("operation.commit", { operation: retryStroke });
     assert.equal((await finalVector.next("operation.committed")).sequence, 13);
     console.log("Database check: a constraint failure rolled back the entire batch; retry saved at the next sequence.");
+
+    const reopened = await request(`/api/rooms/${roomId}/sharing`, ownerToken, { enabled: true }, "PATCH");
+    assert.equal(reopened.status, 200);
+    assert.equal((await request("/api/rooms/join", memberToken, { token: reopened.body.inviteToken })).status, 200);
+    const collaborator = await connect(memberToken, { lastSeq: 13 });
+    const fresh = stroke(560);
+    collaborator.send("operation.packed", { id: fresh.id, packed: packStroke(fresh).toString("base64") });
+    assert.equal((await collaborator.next("operation.ack")).seq, 14);
+    assert.equal((await finalVector.next("operation.committed")).sequence, 14);
+
+    const sharedUndo = visibility(retryStroke.id, false);
+    collaborator.send("operation.commit", { operation: sharedUndo });
+    assert.equal((await collaborator.next("operation.ack")).seq, 15);
+    assert.deepEqual((await finalVector.next("operation.committed")).operation, sharedUndo);
+
+    const duplicateUndo = visibility(retryStroke.id, false);
+    finalVector.send("operation.commit", { operation: duplicateUndo });
+    const redundant = await finalVector.next("error");
+    assert.equal(redundant.operationId, duplicateUndo.id);
+    assert.equal(redundant.code, "HISTORY_CHANGED");
+
+    const sharedRedo = visibility(retryStroke.id, true);
+    finalVector.send("operation.commit", { operation: sharedRedo });
+    assert.deepEqual((await finalVector.next("operation.committed")).operation, sharedRedo);
+    assert.equal((await collaborator.next("operation.committed")).sequence, 16);
+    collaborator.send("operation.commit", { operation: sharedUndo });
+    assert.equal((await collaborator.next("operation.ack")).seq, 15);
+    const late = await connect(memberToken);
+    assert.equal(late.state.sequence, 16);
+    assert.deepEqual(late.state.document.operations.slice(-3), [fresh, sharedUndo, sharedRedo]);
+    console.log("Database check: members change each other's strokes, redundant undo does not advance sequence, and retries remain idempotent.");
+
+    const closedMembership = Promise.all([once(collaborator.socket, "close"), once(late.socket, "close")]);
+    const left = await request(`/api/rooms/${roomId}/membership`, memberToken, undefined, "DELETE");
+    assert.equal(left.status, 200);
+    assert.deepEqual(left.body, { id: roomId });
+    assert.deepEqual((await closedMembership).map(([code]) => code), [4405, 4405]);
+    assert.equal(finalVector.socket.readyState, WebSocket.OPEN);
+    assert.equal((await request(`/api/rooms/${roomId}`, memberToken)).status, 404);
+    assert.deepEqual(await repository.listRooms(memberId), []);
+    assert.deepEqual((await repository.state(ownerId, roomId)).document, late.state.document);
+    assert.equal((await request("/api/rooms/join", memberToken, { token: reopened.body.inviteToken })).status, 200);
+    assert.equal((await repository.state(memberId, roomId)).sequence, 16);
+    console.log("Database check: leaving closes member tabs only, preserves drawing data and supports rejoining.");
   } catch (error) {
     if (error.code === "ERR_ASSERTION") throw error;
     throw new Error(`Live collaboration check failed (${error.code || error.name}).`);

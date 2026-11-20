@@ -40,9 +40,9 @@ const operations = computed(() =>
 const canDraw = computed(
   () => !isProject.value || (board.status === 'connected' && !board.hasSaveError),
 )
-// Bản nháp dùng lịch sử local; dự án chỉ cho chủ ở chế độ Cá nhân dùng lịch sử đã xác nhận.
+// Bản nháp dùng lịch sử local. Dự án Chung bật lịch sử chung theo khả năng máy chủ.
 const historyAvailable = computed(
-  () => !isProject.value || (props.isOwner && !props.room?.sharingEnabled),
+  () => !isProject.value || (props.room?.sharingEnabled ? board.sharedUndo : props.isOwner),
 )
 const canUndo = computed(() =>
   isProject.value ? historyAvailable.value && board.canUndo : draft.canUndo,
@@ -87,13 +87,18 @@ const toolStatus = computed(() =>
 // Lời nhắc giải thích trạng thái lịch sử thay đổi ngay khi vẽ, hoàn tác hoặc làm lại.
 const historyHint = computed(() => {
   if (isProject.value) {
-    if (!historyAvailable.value) return 'Hoàn tác/làm lại chỉ dành cho chủ dự án ở chế độ Cá nhân.'
+    if (!historyAvailable.value)
+      return props.room?.sharingEnabled
+        ? 'Máy chủ chưa hỗ trợ hoàn tác trong dự án Chung.'
+        : 'Chỉ chủ dự án Cá nhân có thể hoàn tác.'
     if (!canDraw.value) return 'Kết nối lại để dùng hoàn tác/làm lại.'
     if (board.pendingCount) return 'Chờ máy chủ xác nhận thao tác trước khi hoàn tác/làm lại.'
     if (board.rejected.length)
       return 'Có thao tác chưa lưu. Hãy kiểm tra thông báo lỗi trước khi tiếp tục.'
     if (!canUndo.value && !canRedo.value)
-      return 'Chỉ hoàn tác nét mới trong lần mở này. Hãy vẽ thêm.'
+      return props.room?.sharingEnabled
+        ? 'Dự án chưa có nét để hoàn tác.'
+        : 'Bạn có thể hoàn tác nét của mình trong lần mở này. Hãy vẽ thêm.'
   }
   if (!canUndo.value && !canRedo.value) return 'Chưa có nét vẽ để hoàn tác. Hãy vẽ lên canvas.'
   if (!canUndo.value) return 'Đã hoàn tác hết nét vẽ. Bạn có thể làm lại.'
@@ -409,7 +414,7 @@ function cancelPreview(id: string) {
       </button>
     </div>
 
-    <div class="studio-layout">
+    <div class="studio-layout" :class="{ 'studio-layout--shared': room?.sharingEnabled }">
       <section class="canvas-panel" aria-label="Khu vực vẽ">
         <div class="canvas-panel-header">
           <div class="panel-title">
@@ -616,6 +621,7 @@ function cancelPreview(id: string) {
       <ProjectChat
         v-if="room?.sharingEnabled"
         :key="room.id"
+        class="studio-chat"
         :room-id="room.id"
         :current-user-id="currentUserId ?? ''"
         :connected="board.status === 'connected' && !board.authRequired"
@@ -626,6 +632,109 @@ function cancelPreview(id: string) {
 </template>
 
 <style scoped>
+/* Thanh công cụ nằm trên vùng làm việc, chừa toàn bộ hàng dưới cho Canvas và chat. */
+.studio-layout--shared {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'tools'
+    'canvas'
+    'chat';
+  gap: 14px 16px;
+}
+.studio-layout--shared .canvas-panel {
+  grid-area: canvas;
+}
+.studio-layout--shared .studio-sidebar {
+  grid-area: tools;
+  display: block;
+  min-width: 0;
+}
+.studio-layout--shared .studio-chat {
+  grid-area: chat;
+}
+
+/* Dàn nút và tùy chỉnh theo hàng ngang, tự xuống dòng khi thiếu chỗ. */
+.studio-layout--shared .sidebar-card {
+  padding: 12px 16px;
+}
+.studio-layout--shared .studio-tools,
+.studio-layout--shared .tool-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.studio-layout--shared .sidebar-eyebrow {
+  margin-bottom: 8px;
+}
+.studio-layout--shared .tool-list {
+  margin: 0 8px 0 0;
+}
+.studio-layout--shared .tool-option {
+  width: auto;
+  min-height: 44px;
+  gap: 6px;
+  padding: 5px 8px;
+}
+.studio-layout--shared .tool-option-icon {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+  font-size: 18px;
+}
+.studio-layout--shared .tool-option-copy strong {
+  margin: 0;
+}
+.studio-layout--shared .tool-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+}
+.studio-layout--shared .color-control,
+.studio-layout--shared .size-input {
+  margin: 0;
+}
+.studio-layout--shared .size-input {
+  width: 100px;
+}
+.studio-layout--shared .studio-history-actions {
+  margin: 0;
+}
+.studio-layout--shared .studio-history-actions button {
+  min-height: 44px;
+}
+.studio-layout--shared
+  :is(
+    .tool-option-copy small,
+    .active-check,
+    .tool-detail,
+    .studio-history-hint,
+    .studio-tool-status,
+    .studio-shortcut-help,
+    .sidebar-helper,
+    .sidebar-tip,
+    .session-note
+  ) {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .studio-layout--shared {
+    grid-template-columns: minmax(0, 1fr) clamp(272px, 28%, 380px);
+    grid-template-areas:
+      'tools tools'
+      'canvas chat';
+  }
+}
+
+@media (max-width: 760px) {
+  .studio-layout--shared .tool-shortcut {
+    display: none;
+  }
+}
+
 .studio-tools {
   min-width: 0;
   margin: 0;

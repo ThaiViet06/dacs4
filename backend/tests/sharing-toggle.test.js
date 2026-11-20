@@ -68,6 +68,11 @@ async function setup(context, { enabled = false, generator = shareToken } = {}) 
       data.members = data.members.filter((user) => user === values[1]);
       return { rows: [] };
     }
+    if (sql === "DELETE FROM drawing.room_members WHERE room_id=$1 AND user_id=$2") {
+      assert.deepEqual(values, [roomId, "member"]);
+      data.members = data.members.filter((user) => user !== values[1]);
+      return { rows: [] };
+    }
     if (sql.startsWith("INSERT INTO drawing.room_members")) {
       assert.equal(values[0], roomId);
       if (!data.members.includes(values[1])) data.members.push(values[1]);
@@ -294,6 +299,45 @@ test("project DELETE rejects nonowners and allows the browser CORS preflight", a
   });
   assert.equal(response.status, 204);
   assert.match(response.headers.get("Access-Control-Allow-Methods"), /\bDELETE\b/);
+});
+
+test("leaving removes the signed-in membership and closes only their tabs after commit", { timeout: 5000 }, async (context) => {
+  context.mock.method(console, "error", () => {});
+  const { request, path, roomId, stored, control, application } = await setup(context, { enabled: true });
+  const [owner, member, secondTab] = await Promise.all([
+    connect(context, application, "owner", roomId),
+    connect(context, application, "member", roomId),
+    connect(context, application, "member", roomId),
+  ]);
+  await Promise.all([owner.next("room.state"), member.next("room.state"), secondTab.next("room.state")]);
+  const before = stored();
+  const leave = (user) => request(path + "/membership", undefined, user, "DELETE");
+  assert.equal((await leave(null)).status, 401);
+  assert.equal((await leave("owner")).status, 403);
+  assert.equal((await leave("outsider")).status, 404);
+  control.failAt = "commit";
+  assert.equal((await leave("member")).status, 503);
+  assert.deepEqual(stored(), before);
+  assert.equal(member.socket.readyState, WebSocket.OPEN);
+
+  control.failAt = "";
+  const atCommit = pauseCommit(control);
+  const response = leave("member");
+  await atCommit;
+  assert.equal(secondTab.socket.readyState, WebSocket.OPEN);
+  assert.deepEqual(stored(), before);
+  const closed = Promise.all([once(member.socket, "close"), once(secondTab.socket, "close")]);
+  control.release();
+  const left = await response;
+  assert.equal(left.status, 200);
+  assert.deepEqual(await left.json(), { id: roomId });
+  assert.deepEqual((await closed).map(([code]) => code), [4405, 4405]);
+  assert.equal(owner.socket.readyState, WebSocket.OPEN);
+  assert.deepEqual(stored(), { ...before, members: ["owner"] });
+  assert.equal((await request(path, undefined, "member")).status, 404);
+  assert.equal((await leave("member")).status, 404);
+  assert.equal((await request("/api/rooms/join", { token: legacyToken }, "member")).status, 200);
+  assert.deepEqual(stored(), before);
 });
 
 // COMMIT lỗi giữ phòng đang mở, còn xóa thành công đóng cả hai socket và vô hiệu hóa link.
