@@ -13,3 +13,25 @@
 .DS_Store
 .tools/
 artifacts/
+
+# Tài liệu và báo cáo cục bộ
+reportsource/
+reports/
+*.md
+*.pdf
+*.doc
+*.docx
+*.docm
+*.ppt
+*.pptx
+*.pptm
+*.txt
+
+# Cấu hình cá nhân và workspace IDE
+*.local
+*.local.*
+*.code-workspace
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.codex/
